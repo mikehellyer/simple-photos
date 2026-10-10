@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Simple-Photos
+Comment=Browse, rate and tag your photo collection
+Exec=/opt/simple-photos/Simple-Photos
+Icon=simple-photos
+Terminal=false
+Categories=Graphics;Photography;Viewer;

@@ -1,0 +1,224 @@
+"""The left-hand sidebar: browse the collection by folder, by date or by
+tag. Whichever tab was used last decides what the grid shows."""
+from __future__ import annotations
+
+import calendar
+import os
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QInputDialog,
+    QMenu,
+    QMessageBox,
+    QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from simple_photos.core.library import Library
+
+ScopeRole = Qt.UserRole + 1
+ALL_PHOTOS = {}
+
+
+def _tree() -> QTreeWidget:
+    tree = QTreeWidget()
+    tree.setHeaderHidden(True)
+    tree.setColumnCount(2)
+    tree.setRootIsDecorated(True)
+    tree.setUniformRowHeights(True)
+    return tree
+
+
+def _fit_columns(tree: QTreeWidget) -> None:
+    tree.resizeColumnToContents(1)
+    header = tree.header()
+    header.setStretchLastSection(False)
+    header.setSectionResizeMode(0, header.ResizeMode.Stretch)
+    header.setSectionResizeMode(1, header.ResizeMode.ResizeToContents)
+
+
+def _item(parent, text: str, count: int, scope: dict) -> QTreeWidgetItem:
+    item = QTreeWidgetItem(parent, [text, f"{count:,}"])
+    item.setData(0, ScopeRole, scope)
+    item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+    return item
+
+
+class Sidebar(QTabWidget):
+    scope_changed = Signal()
+    tags_edited = Signal()
+
+    def __init__(self, library: Library, parent=None):
+        super().__init__(parent)
+        self._library = library
+        self._active = 0
+
+        folders_page = QWidget()
+        folders_layout = QVBoxLayout(folders_page)
+        folders_layout.setContentsMargins(0, 0, 0, 0)
+        self._folders = _tree()
+        folders_layout.addWidget(self._folders)
+        self._subfolders = QCheckBox("Include subfolders")
+        self._subfolders.setChecked(True)
+        self._subfolders.toggled.connect(lambda: self._activate(0))
+        folders_layout.addWidget(self._subfolders)
+        self._dates = _tree()
+        self._tags = _tree()
+        self._tags.setRootIsDecorated(False)
+        self._tags.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._tags.customContextMenuRequested.connect(self._tag_menu)
+
+        self.addTab(folders_page, "Folders")
+        self.addTab(self._dates, "Dates")
+        self.addTab(self._tags, "Tags")
+        for page, tree in enumerate((self._folders, self._dates, self._tags)):
+            tree.itemSelectionChanged.connect(lambda page=page: self._activate(page))
+        self.currentChanged.connect(self._activate)
+
+    # --- what the grid should show --------------------------------------
+
+    def scope(self) -> dict:
+        tree = (self._folders, self._dates, self._tags)[self._active]
+        items = tree.selectedItems()
+        if not items:
+            return ALL_PHOTOS
+        scope = dict(items[0].data(0, ScopeRole) or {})
+        if "folder" in scope:
+            scope["include_subfolders"] = self._subfolders.isChecked()
+        return scope
+
+    def _activate(self, page: int) -> None:
+        self._active = page
+        self.scope_changed.emit()
+
+    def select_folder(self, folder: str) -> None:
+        self.setCurrentIndex(0)
+        self._select_by_scope(self._folders, {"folder": os.path.normpath(folder)})
+
+    # --- filling the trees ----------------------------------------------
+
+    def refresh(self, roots: list[str]) -> None:
+        """Rebuild all three trees from the library, keeping what was
+        selected and expanded. Doesn't emit scope_changed."""
+        total = self._library.count()
+        for tree, fill in (
+            (self._folders, lambda: self._fill_folders(roots, total)),
+            (self._dates, lambda: self._fill_dates(total)),
+            (self._tags, lambda: self._fill_tags(total)),
+        ):
+            selected = [item.data(0, ScopeRole) for item in tree.selectedItems()]
+            expanded = self._expanded_scopes(tree)
+            first_fill = tree.topLevelItemCount() == 0
+            tree.blockSignals(True)
+            tree.clear()
+            fill()
+            self._restore_expanded(tree, expanded, first_fill)
+            if selected:
+                self._select_by_scope(tree, selected[0])
+            tree.blockSignals(False)
+            _fit_columns(tree)
+
+    def _fill_folders(self, roots: list[str], total: int) -> None:
+        _item(self._folders, "All Photos", total, ALL_PHOTOS)
+        counts = self._library.folder_counts()
+        for root in roots:
+            root = os.path.normpath(os.path.abspath(os.path.expanduser(root)))
+            prefix = root.rstrip(os.sep) + os.sep
+            # folder → photos in it and everything below it
+            totals: dict[str, int] = {}
+            for folder, count in counts.items():
+                if folder != root and not folder.startswith(prefix):
+                    continue
+                while True:
+                    totals[folder] = totals.get(folder, 0) + count
+                    if folder == root:
+                        break
+                    folder = os.path.dirname(folder)
+            label = os.path.basename(root) or root
+            top = _item(self._folders, label, totals.get(root, 0), {"folder": root})
+            top.setToolTip(0, root if os.path.isdir(root) else f"{root}\n(not available right now)")
+            nodes = {root: top}
+            for folder in sorted(totals, key=lambda f: [part.lower() for part in f.split(os.sep)]):
+                if folder == root:
+                    continue
+                parent = nodes.get(os.path.dirname(folder), top)
+                nodes[folder] = _item(parent, os.path.basename(folder), totals[folder], {"folder": folder})
+
+    def _fill_dates(self, total: int) -> None:
+        _item(self._dates, "All Dates", total, ALL_PHOTOS)
+        years: dict[int, QTreeWidgetItem] = {}
+        year_totals: dict[int, int] = {}
+        months = self._library.date_counts()
+        for year, _month, count in months:
+            year_totals[year] = year_totals.get(year, 0) + count
+        for year, month, count in reversed(months):
+            if year not in years:
+                years[year] = _item(self._dates, str(year), year_totals[year], {"year": year})
+            name = calendar.month_name[month] if 1 <= month <= 12 else "Unknown"
+            _item(years[year], name, count, {"year": year, "month": month})
+
+    def _fill_tags(self, total: int) -> None:
+        _item(self._tags, "All Photos", total, ALL_PHOTOS)
+        _item(self._tags, "Untagged", self._library.untagged_count(), {"untagged": True})
+        for tag_id, name, count in self._library.tag_counts():
+            item = _item(self._tags, name, count, {"tag_id": tag_id})
+            item.setData(1, ScopeRole, name)
+
+    @staticmethod
+    def _walk(tree: QTreeWidget):
+        stack = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            yield item
+            stack.extend(item.child(i) for i in range(item.childCount()))
+
+    def _expanded_scopes(self, tree: QTreeWidget) -> list[dict]:
+        return [item.data(0, ScopeRole) for item in self._walk(tree) if item.isExpanded()]
+
+    def _restore_expanded(self, tree: QTreeWidget, expanded: list[dict], first_fill: bool) -> None:
+        for item in self._walk(tree):
+            scope = item.data(0, ScopeRole)
+            if scope in expanded or (first_fill and item.parent() is None and "folder" in (scope or {})):
+                item.setExpanded(True)
+
+    def _select_by_scope(self, tree: QTreeWidget, scope: dict) -> None:
+        for item in self._walk(tree):
+            if item.data(0, ScopeRole) == scope:
+                tree.setCurrentItem(item)
+                parent = item.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                tree.scrollToItem(item)
+                return
+
+    # --- tag management -------------------------------------------------
+
+    def _tag_menu(self, position) -> None:
+        item = self._tags.itemAt(position)
+        if item is None or "tag_id" not in (item.data(0, ScopeRole) or {}):
+            return
+        tag_id = item.data(0, ScopeRole)["tag_id"]
+        name = item.data(1, ScopeRole)
+        menu = QMenu(self)
+        menu.addAction("Rename Tag…", lambda: self._rename_tag(tag_id, name))
+        menu.addAction("Delete Tag", lambda: self._delete_tag(tag_id, name))
+        menu.exec(self._tags.viewport().mapToGlobal(position))
+
+    def _rename_tag(self, tag_id: int, name: str) -> None:
+        new_name, ok = QInputDialog.getText(self, "Rename Tag", "New name:", text=name)
+        if ok and new_name.strip() and new_name.strip() != name:
+            self._library.rename_tag(tag_id, new_name)
+            self.tags_edited.emit()
+
+    def _delete_tag(self, tag_id: int, name: str) -> None:
+        answer = QMessageBox.question(
+            self, "Delete Tag", f"Remove the tag “{name}” from every photo? The photos themselves aren't touched."
+        )
+        if answer == QMessageBox.Yes:
+            self._library.delete_tag(tag_id)
+            self.tags_edited.emit()
