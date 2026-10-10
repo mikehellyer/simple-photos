@@ -1,10 +1,6 @@
 import sys
 
-from PySide6.QtWidgets import QApplication
-
 from simple_photos import __version__
-from simple_photos.core.diagnostics import enable_app_log, enable_crash_log, log_event
-from simple_photos.gui.main_window import MainWindow
 
 
 def self_test() -> int:
@@ -26,6 +22,14 @@ def self_test() -> int:
 def main() -> int:
     if "--self-test" in sys.argv:
         return self_test()
+
+    # Qt is imported only now, so --self-test runs even where there's no
+    # display or graphics libraries (the release workflow's build machines).
+    from PySide6.QtWidgets import QApplication
+
+    from simple_photos.core.diagnostics import enable_app_log, enable_crash_log, log_event
+    from simple_photos.gui.main_window import MainWindow
+
     enable_app_log(__version__)
     enable_crash_log()
     app = QApplication(sys.argv)
