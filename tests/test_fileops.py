@@ -19,7 +19,8 @@ def test_linux_asks_the_file_manager_over_dbus():
     ):
         command = reveal_command("/p/my photo.jpg")
     assert command[0] == "/usr/bin/dbus-send"
-    assert "array:string:file:///p/my%20photo.jpg" in command
+    uri = next(arg for arg in command if arg.startswith("array:string:"))
+    assert uri.startswith("array:string:file:///") and uri.endswith("/p/my%20photo.jpg")  # (a drive letter in between on Windows)
 
 
 def test_linux_without_dbus_gives_up():
