@@ -152,3 +152,47 @@ def test_forget(library, collection):
     library.forget([first.id])
     assert library.photo(first.id) is None
     assert library.count() == 2
+
+
+def test_empty_folders_are_listed(library, collection):
+    (collection / "Empty" / "Deeper").mkdir(parents=True)
+    library.scan([collection])
+    counts = library.folder_counts()
+    assert counts[str(collection / "Empty")] == 0
+    assert counts[str(collection / "Empty" / "Deeper")] == 0
+    assert str(collection / ".hidden") not in counts
+
+
+def test_added_folder_shows_before_a_scan_and_goes_when_deleted(library, collection):
+    library.scan([collection])
+    new = collection / "Made Just Now"
+    new.mkdir()
+    library.add_folder(str(new))
+    assert library.folder_counts()[str(new)] == 0
+    new.rmdir()
+    library.scan([collection])
+    assert str(new) not in library.folder_counts()
+
+
+def test_relocated_photos_keep_their_tags(library, collection):
+    library.scan([collection])
+    beach = library.query(PhotoFilter(text="beach"))[0]
+    library.set_rating([beach.id], 5)
+    library.add_tag([beach.id], "Sea")
+    new_path = collection / "2024" / "beach.jpg"
+    os.replace(beach.path, new_path)
+    library.relocate([(beach.path, str(new_path))])
+    moved = library.photo(beach.id)
+    assert (moved.path, moved.folder, moved.filename) == (str(new_path), str(collection / "2024"), "beach.jpg")
+    assert library.scan([collection]).added == 0  # the scan agrees nothing changed
+    assert library.photo(beach.id).rating == 5
+    assert library.tags_for([beach.id]) == {"Sea": 1}
+
+
+def test_stopped_scan_removes_nothing(library, collection):
+    library.scan([collection])
+    (collection / "2023" / "sunset.jpg").unlink()
+    make_photo(collection / "2025" / "new.jpg")
+    result = library.scan([collection], should_stop=lambda: True)
+    assert (result.added, result.removed) == (0, 0)
+    assert library.count() == 3

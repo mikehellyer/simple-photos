@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS photos (
 );
 CREATE INDEX IF NOT EXISTS idx_photos_folder ON photos(folder);
 CREATE INDEX IF NOT EXISTS idx_photos_taken ON photos(taken);
+-- Every folder under the collection, including empty ones, so a folder
+-- that has just been made (or emptied) still shows in the folder tree.
+CREATE TABLE IF NOT EXISTS folders (
+    path TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE
@@ -173,6 +178,7 @@ class Library:
             for row in self._db.execute("SELECT path, file_size, file_mtime FROM photos")
         }
         seen: set[str] = set()
+        seen_folders: set[str] = set()
         available_roots = [r for r in roots if os.path.isdir(r)]
         count = 0
         for root in available_roots:
@@ -181,9 +187,13 @@ class Library:
                     self._db.commit()
                     return result
                 dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+                seen_folders.add(dirpath)
                 for name in sorted(filenames):
                     if not is_photo_file(name):
                         continue
+                    if should_stop and should_stop():
+                        self._db.commit()
+                        return result
                     path = os.path.join(dirpath, name)
                     try:
                         stat = os.stat(path)
@@ -209,11 +219,22 @@ class Library:
             chunk = gone[start : start + 500]
             self._db.execute(f"DELETE FROM photos WHERE path IN ({','.join('?' * len(chunk))})", chunk)
         result.removed = len(gone)
+        self._sync_folders(seen_folders, roots, available_roots)
         self._db.execute("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM photo_tags)")
         self._db.commit()
         if progress:
             progress(count, "")
         return result
+
+    def _sync_folders(self, seen: set[str], roots: list[str], available_roots: list[str]) -> None:
+        known = {row[0] for row in self._db.execute("SELECT path FROM folders")}
+        stale = [
+            path
+            for path in known - seen
+            if not _is_under(path, roots) or _is_under(path, available_roots)
+        ]
+        self._db.executemany("DELETE FROM folders WHERE path = ?", [(path,) for path in stale])
+        self._db.executemany("INSERT OR IGNORE INTO folders (path) VALUES (?)", [(path,) for path in seen - known])
 
     def _store(self, path: str, stat: os.stat_result, exists: bool, result: ScanResult) -> None:
         try:
@@ -247,8 +268,11 @@ class Library:
         return self._db.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
 
     def folder_counts(self) -> dict[str, int]:
-        """Photos directly in each folder (not counting subfolders)."""
-        return {row[0]: row[1] for row in self._db.execute("SELECT folder, COUNT(*) FROM photos GROUP BY folder")}
+        """Photos directly in each folder (not counting subfolders).
+        Folders with no photos in them are included, with 0."""
+        counts = {row[0]: 0 for row in self._db.execute("SELECT path FROM folders")}
+        counts.update({row[0]: row[1] for row in self._db.execute("SELECT folder, COUNT(*) FROM photos GROUP BY folder")})
+        return counts
 
     def date_counts(self) -> list[tuple[int, int, int]]:
         """(year, month, photos) for every month that has any, oldest first."""
@@ -395,6 +419,23 @@ class Library:
         return [row[0] for row in self._db.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE")]
 
     # --- files ----------------------------------------------------------
+
+    def add_folder(self, path: str) -> None:
+        """Note a folder that's just been made, before the next scan."""
+        self._db.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", (_norm(path),))
+        self._db.commit()
+
+    def relocate(self, moves: Iterable[tuple[str, str]]) -> None:
+        """Photos moved on disk: (old path, new path) pairs. They keep
+        their ratings, tags and captions."""
+        for old, new in moves:
+            new = _norm(new)
+            self._db.execute(
+                "UPDATE photos SET path = ?, folder = ?, filename = ? WHERE path = ?",
+                (new, os.path.dirname(new), os.path.basename(new), _norm(old)),
+            )
+            self._db.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", (os.path.dirname(new),))
+        self._db.commit()
 
     def forget(self, photo_ids: Iterable[int]) -> None:
         """Drop photos from the library (their files were moved to the trash)."""

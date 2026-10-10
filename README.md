@@ -49,6 +49,22 @@ through photos and Esc to go back. Scroll to zoom, drag to pan, and
 double-click to switch between fit and 100%. F11 goes full screen and **S**
 starts a slideshow.
 
+**Folders.** **File ▸ New Folder…** (Ctrl+Shift+N) makes a real folder on
+disk inside the folder picked in the sidebar. You can also right-click any
+folder in the sidebar and choose **New Folder…**. Names that wouldn't work on
+Windows, macOS or Linux are refused as you type. Empty folders show in the tree
+too, so a new folder is ready to fill.
+
+**Moving photos.** Select one or more photos and choose **Photo ▸ Move to
+Folder…** (Ctrl+Shift+M, also on the right-click menu and in the viewer).
+Then pick the destination, or make a new one there with **New Folder…**. You
+can also drag photos from the grid onto a folder in the sidebar. Moved photos
+keep their ratings, tags and captions. A photo never overwrites a file of the
+same name; it's saved as `name (2).jpg` instead. Moving to another drive copies
+the file, then deletes the original. Photos dragged out to a file manager or
+another app are copied, never moved, so nothing leaves the library behind
+its back.
+
 **Files.** Right-click a photo for **Open in Default App**, **Show in File
 Manager**, and **Move to Trash** (it goes to the system Trash, so it can be
 restored).
@@ -97,7 +113,8 @@ pytest
   - `metadata.py`: EXIF reading and display formatting
   - `library.py`: the SQLite catalogue, scanning, queries, ratings and tags
   - `thumbnails.py`: decoding photos the right way up, and the thumbnail cache
-  - `fileops.py`: showing a file in the system's file manager
+  - `fileops.py`: making folders, moving photos, and showing a file in the
+    system's file manager
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,
   info panel and viewer.

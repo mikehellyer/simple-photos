@@ -53,6 +53,12 @@ class _Relay(QObject):
 
     @Slot()
     def thread_finished(self) -> None:
+        # `finished` is emitted from the job's thread just *before* that
+        # thread actually exits, and dropping our references below can
+        # destroy the QThread at once — while it's technically still
+        # running, which aborts the app. Waiting first closes that window
+        # (it's only ever a moment). Seen under load, at startup.
+        self._thread.wait()
         self._runner._jobs.remove(self)
         self._worker.deleteLater()
         self._thread.deleteLater()

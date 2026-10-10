@@ -7,6 +7,7 @@ from collections import OrderedDict
 
 from PySide6.QtCore import (
     QAbstractListModel,
+    QMimeData,
     QModelIndex,
     QObject,
     QRect,
@@ -14,6 +15,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QThreadPool,
+    QUrl,
     Signal,
     Slot,
 )
@@ -25,6 +27,7 @@ from simple_photos.core.thumbnails import ensure_thumbnail, thumbnail_cache_dir
 from simple_photos.gui.star_rating import GOLD
 
 PhotoRole = Qt.UserRole + 1
+PHOTO_IDS_MIME = "application/x-simple-photos-ids"  # comma-separated photo ids
 MEMORY_CACHE_SIZE = 400  # thumbnails kept decoded; up to ~600 KB each
 
 
@@ -137,6 +140,29 @@ class PhotoModel(QAbstractListModel):
             return f"{row.filename}\n{row.taken}"
         return None
 
+    def flags(self, index: QModelIndex):
+        flags = super().flags(index)
+        return flags | Qt.ItemIsDragEnabled if index.isValid() else flags
+
+    def mimeTypes(self) -> list[str]:
+        return [PHOTO_IDS_MIME, "text/uri-list"]
+
+    def supportedDragActions(self):
+        # Copy only, as far as other apps are concerned: a file manager
+        # moving a photo would leave the library pointing at nothing. A
+        # drop on a sidebar folder does Simple-Photos' own move instead.
+        return Qt.CopyAction
+
+    def mimeData(self, indexes) -> QMimeData:
+        """Photo ids for dropping on a folder in the sidebar, plus file
+        URLs, so photos can also be dragged out to a file manager or
+        another app."""
+        rows = [self._rows[i.row()] for i in sorted(indexes, key=lambda i: i.row()) if i.isValid()]
+        data = QMimeData()
+        data.setData(PHOTO_IDS_MIME, ",".join(str(row.id) for row in rows).encode())
+        data.setUrls([QUrl.fromLocalFile(row.path) for row in rows])
+        return data
+
     @Slot(int, int, QImage)
     def _on_loaded(self, photo_id: int, generation: int, image: QImage) -> None:
         self._pending.discard(photo_id)
@@ -229,6 +255,9 @@ class PhotoGrid(QListView):
         self.setMovement(QListView.Static)
         self.setUniformItemSizes(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragOnly)
+        self.setDefaultDropAction(Qt.CopyAction)
         self.setMouseTracking(True)
         self.setSpacing(2)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)

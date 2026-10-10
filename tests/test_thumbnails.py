@@ -39,3 +39,14 @@ def test_broken_file_gives_no_thumbnail(tmp_path):
 def test_load_image_full_size_is_upright(tmp_path):
     photo = make_photo(tmp_path / "side.jpg", size=(300, 200), orientation=8)
     assert load_image(photo).size == (200, 300)
+
+
+def test_move_thumbnail_keeps_the_cached_file(tmp_path):
+    from simple_photos.core.thumbnails import move_thumbnail, thumbnail_path
+
+    photo = make_photo(tmp_path / "a.jpg")
+    cache = tmp_path / "cache"
+    ensure_thumbnail(photo, 1.0, cache)
+    move_thumbnail(photo, tmp_path / "moved" / "a.jpg", 1.0, cache)
+    assert thumbnail_path(tmp_path / "moved" / "a.jpg", 1.0, cache).exists()
+    move_thumbnail(tmp_path / "nothing.jpg", tmp_path / "x.jpg", 1.0, cache)  # no thumbnail: no error

@@ -78,3 +78,18 @@ def ensure_thumbnail(
     except OSError:
         return None
     return dest
+
+
+def move_thumbnail(
+    old_path: str | Path, new_path: str | Path, mtime: float, cache_dir: Optional[Path] = None, size: int = THUMBNAIL_SIZE
+) -> None:
+    """A photo was moved: re-file its cached thumbnail under the new path
+    so it needn't be made again. Never raises."""
+    cache_dir = cache_dir or thumbnail_cache_dir()
+    old = thumbnail_path(old_path, mtime, cache_dir, size)
+    new = thumbnail_path(new_path, mtime, cache_dir, size)
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(old, new)
+    except OSError:
+        pass

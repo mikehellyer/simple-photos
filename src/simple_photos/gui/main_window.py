@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QFile, QItemSelection, QItemSelectionModel, Qt, QThread, QTimer, QUrl, Slot
-from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QSlider,
     QSplitter,
@@ -26,11 +27,13 @@ from PySide6.QtWidgets import (
 
 from simple_photos import __version__
 from simple_photos.core.diagnostics import log_dir, log_event
-from simple_photos.core.fileops import reveal_in_file_manager
+from simple_photos.core.fileops import move_photos, reveal_in_file_manager
 from simple_photos.core.library import Library, PhotoFilter, ScanResult
 from simple_photos.core.self_update import download_asset, find_asset_for_this_platform, launch_installer
 from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
+from simple_photos.core.thumbnails import move_thumbnail
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
+from simple_photos.gui.folder_dialogs import MoveToFolderDialog, make_new_folder, short_path
 from simple_photos.gui.info_panel import InfoPanel
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
 from simple_photos.gui.settings_dialog import SettingsDialog, normalise
@@ -64,6 +67,7 @@ class MainWindow(QMainWindow):
         self._scan_worker: ScanWorker | None = None
         self._last_scan_refresh = 0.0
         self._rescan_after = False
+        self._moving = False
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -77,6 +81,9 @@ class MainWindow(QMainWindow):
         self._sidebar = Sidebar(self._library)
         self._sidebar.scope_changed.connect(self._reload_photos)
         self._sidebar.tags_edited.connect(self._tags_changed)
+        self._sidebar.photos_dropped.connect(self._photos_dropped)
+        self._sidebar.new_folder_requested.connect(self._new_folder)
+        self._sidebar.reveal_requested.connect(lambda folder: QDesktopServices.openUrl(QUrl.fromLocalFile(folder)))
         self._splitter.addWidget(self._sidebar)
 
         self._stack = QStackedWidget()
@@ -199,6 +206,7 @@ class MainWindow(QMainWindow):
             return act
 
         file_menu = self.menuBar().addMenu("&File")
+        action(file_menu, "New Folder…", "Ctrl+Shift+N", lambda: self._new_folder(None))
         action(file_menu, "Add Folder to Collection…", "Ctrl+O", self._add_folder)
         action(file_menu, "Look for New Photos", "F5", self.rescan)
         file_menu.addSeparator()
@@ -210,6 +218,7 @@ class MainWindow(QMainWindow):
         view_action = action(photo_menu, "View", None, lambda: self._open_viewer(self._grid.currentIndex().row()))
         open_action = action(photo_menu, "Open in Default App", "Ctrl+Shift+O", self._open_externally)
         reveal_action = action(photo_menu, "Show in File Manager", "Ctrl+Shift+R", self._reveal)
+        move_action = action(photo_menu, "Move to Folder…", "Ctrl+Shift+M", self._move_to_folder)
         photo_menu.addSeparator()
         rate_menu = photo_menu.addMenu("Rate")
         for rating in range(6):
@@ -217,7 +226,7 @@ class MainWindow(QMainWindow):
         action(photo_menu, "Add Tag…", "Ctrl+T", self._focus_tags)
         photo_menu.addSeparator()
         trash_action = action(photo_menu, "Move to Trash", QKeySequence.Delete, self._trash, local=True)
-        for act in (view_action, open_action, reveal_action):
+        for act in (view_action, open_action, reveal_action, move_action):
             self._grid.addAction(act)
         separator = QAction(self)
         separator.setSeparator(True)
@@ -469,19 +478,127 @@ class MainWindow(QMainWindow):
         for row in rows:
             (trashed if QFile.moveToTrash(row.path) else failed).append(row)
         self._library.forget([row.id for row in trashed])
-        in_viewer = self._stack.currentWidget() is self._viewer
-        viewer_row = self._viewer.current_row()
-        self._refresh_sidebar()
-        self._reload_photos()
-        if in_viewer:
-            if self._model.rowCount():
-                self._open_viewer(min(viewer_row, self._model.rowCount() - 1))
-            else:
-                self._close_viewer()
+        self._photos_changed_on_disk()
         if failed:
             QMessageBox.warning(self, "Move to Trash", f"Couldn't move {len(failed):,} photo(s) to the Trash, e.g. {failed[0].path}")
         else:
             self._status.showMessage(f"Moved {len(trashed):,} photo{'s' if len(trashed) != 1 else ''} to the Trash", 5000)
+
+    def _photos_changed_on_disk(self) -> None:
+        """Photos were trashed or moved: refresh everything. In the viewer,
+        stay at the same place in the (possibly shorter) list."""
+        in_viewer = self._stack.currentWidget() is self._viewer
+        viewer_photo = self._viewer.current_photo()
+        viewer_row = self._viewer.current_row()
+        self._refresh_sidebar()
+        self._reload_photos()
+        if in_viewer:
+            row = self._model.row_of(viewer_photo.id) if viewer_photo else None
+            if row is None:
+                row = min(viewer_row, self._model.rowCount() - 1)
+            if row >= 0:
+                self._open_viewer(row)
+            else:
+                self._close_viewer()
+
+    # --- folders --------------------------------------------------------
+
+    def _new_folder(self, parent_folder: str | None) -> None:
+        """Make a folder inside parent_folder — by default the folder picked
+        in the sidebar, or else the first collection folder."""
+        if parent_folder is None:
+            selected = self._sidebar.selected_folder()
+            candidates = [selected] if selected else []
+            candidates += [normalise(f) for f in self._settings.settings.collection_folders]
+            parent_folder = next((f for f in candidates if os.path.isdir(f)), None)
+        if parent_folder is None:
+            QMessageBox.information(self, "New Folder", "Add a folder to your collection first (File ▸ Add Folder to Collection…).")
+            return
+        path = make_new_folder(self._library, parent_folder, self)
+        if path:
+            self._refresh_sidebar()
+            self._sidebar.select_folder(path)
+            self._status.showMessage(f"Made {short_path(path)}", 5000)
+
+    def _move_to_folder(self) -> None:
+        rows = self._active_rows()
+        if not rows:
+            return
+        folders = {os.path.dirname(row.path) for row in rows}
+        dialog = MoveToFolderDialog(
+            self._library,
+            self._settings.settings.collection_folders,
+            len(rows),
+            folders.pop() if len(folders) == 1 else self._sidebar.selected_folder(),
+            self,
+        )
+        if dialog.exec() and dialog.destination():
+            self._refresh_sidebar()  # the dialog may have made folders
+            self._move_photos(rows, dialog.destination())
+
+    def _photos_dropped(self, photo_ids: list[int], folder: str) -> None:
+        wanted = set(photo_ids)
+        rows = [row for row in self._model.photos() if row.id in wanted]
+        if not rows:
+            return
+        menu = QMenu(self)
+        what = f"“{rows[0].filename}”" if len(rows) == 1 else f"{len(rows):,} photos"
+        move = menu.addAction(f"Move {what} to {os.path.basename(folder) or folder}")
+        menu.addSeparator()
+        menu.addAction("Cancel")
+        if menu.exec(QCursor.pos()) is move:
+            self._move_photos(rows, folder)
+
+    def _move_photos(self, rows, destination: str) -> None:
+        if self._moving:
+            self._status.showMessage("Still moving the last photos — try again in a moment", 5000)
+            return
+        if self._scan_thread is not None:
+            # A scan running alongside could see a photo vanish from its
+            # old folder and drop its tags. Stop it (it then removes
+            # nothing) and look again once the move is done.
+            self._stop_scan()
+            self._rescan_after = True
+        self._info.save_caption()
+        self._moving = True
+        self._status.showMessage(f"Moving {len(rows):,} photo{'s' if len(rows) != 1 else ''}…")
+        mtimes = {row.path: row.file_mtime for row in rows}
+        paths = [row.path for row in rows]
+        cache_dir = self._model.loader.cache_dir
+
+        def job():
+            result = move_photos(paths, destination)
+            for old, new in result.moved:
+                move_thumbnail(old, new, mtimes[old], cache_dir)
+            return result
+
+        self._runner.run(job, lambda result: self._on_moved(result, destination), lambda error: self._on_moved(error, destination))
+
+    def _on_moved(self, result, destination: str) -> None:
+        self._moving = False
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Move to Folder", f"Couldn't move the photos: {result}")
+            result = None
+        else:
+            self._library.relocate(result.moved)
+            self._photos_changed_on_disk()
+            moved = len(result.moved)
+            where = short_path(destination)
+            if result.failed:
+                path, reason = result.failed[0]
+                QMessageBox.warning(
+                    self,
+                    "Move to Folder",
+                    f"Moved {moved:,} to {where}, but {len(result.failed):,} couldn't be moved.\n\n"
+                    f"{os.path.basename(path)}: {reason}",
+                )
+            elif moved:
+                self._status.showMessage(f"Moved {moved:,} photo{'s' if moved != 1 else ''} to {where}", 6000)
+            else:
+                self._status.showMessage(f"Already in {where}", 5000)
+        if self._rescan_after and self._scan_thread is None:
+            self._rescan_after = False
+            self.rescan()
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add a Folder to the Collection")
@@ -504,7 +621,7 @@ class MainWindow(QMainWindow):
     # --- scanning -------------------------------------------------------
 
     def rescan(self) -> None:
-        if self._scan_thread is not None:
+        if self._scan_thread is not None or self._moving:
             self._rescan_after = True  # folders changed mid-scan: go again after
             return
         roots = list(self._settings.settings.collection_folders)
@@ -545,15 +662,21 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_scan_done(self, result) -> None:
         thread = self._scan_thread
+        stopped = self._scan_worker is not None and self._scan_worker.cancel_event.is_set()
         self._scan_thread = self._scan_worker = None
         if thread is not None:
-            thread.wait(5000)
+            # done is delivered before the thread has been told to stop
+            # (its quit is queued behind this), so ask it now — waiting
+            # without that just timed out, and dropping a still-running
+            # QThread aborts the app.
+            thread.quit()
+            thread.wait()
             thread.deleteLater()
         self._scan_label.setText("")
         if isinstance(result, Exception):
             log_event(f"scan failed: {result!r}")
             self._status.showMessage(f"Couldn't finish looking for photos: {result}", 10000)
-        else:
+        elif not stopped:
             parts = [f"{n:,} {label}" for n, label in ((result.added, "new"), (result.updated, "changed"), (result.removed, "removed")) if n]
             self._status.showMessage("Collection up to date" + (f": {', '.join(parts)}" if parts else ""), 8000)
         self._refresh_sidebar()
