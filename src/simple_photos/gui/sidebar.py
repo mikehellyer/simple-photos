@@ -151,6 +151,7 @@ class Sidebar(QTabWidget):
     tags_edited = Signal()
     photos_dropped = Signal(list, str)  # photo ids, destination folder
     new_folder_requested = Signal(str)  # parent folder
+    rename_folder_requested = Signal(str)  # folder
     reveal_requested = Signal(str)  # folder
 
     def __init__(self, library: Library, parent=None):
@@ -215,10 +216,12 @@ class Sidebar(QTabWidget):
             return
         menu = QMenu(self)
         new = menu.addAction("New Folder…", lambda: self.new_folder_requested.emit(folder))
+        rename = menu.addAction("Rename Folder…", lambda: self.rename_folder_requested.emit(folder))
+        menu.addSeparator()
         reveal = menu.addAction("Show in File Manager", lambda: self.reveal_requested.emit(folder))
         if not os.path.isdir(folder):
-            new.setEnabled(False)
-            reveal.setEnabled(False)
+            for entry in (new, rename, reveal):
+                entry.setEnabled(False)
         menu.exec(self._folders.viewport().mapToGlobal(position))
 
     # --- filling the trees ----------------------------------------------

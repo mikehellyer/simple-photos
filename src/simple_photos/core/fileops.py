@@ -50,6 +50,23 @@ def create_folder(parent: str, name: str) -> str:
     return path
 
 
+def rename_folder(path: str, new_name: str) -> str:
+    """Rename the folder in place and return its new path. Raises
+    ValueError with a message for the user, or OSError."""
+    problem = folder_name_problem(new_name)
+    if problem:
+        raise ValueError(problem)
+    path = os.path.normpath(path)
+    target = os.path.join(os.path.dirname(path), new_name)
+    if target == path:
+        return path
+    # On macOS/Windows "Rome" → "rome" is the same folder: allowed.
+    if os.path.lexists(target) and not os.path.samefile(path, target):
+        raise ValueError(f"There's already something called “{new_name}” there.")
+    os.rename(path, target)
+    return target
+
+
 def free_name(folder: str, filename: str, taken: set[str] = frozenset()) -> str:
     """filename, or 'name (2).ext', 'name (3).ext'… — whichever doesn't
     already exist in folder (or in taken, names already claimed)."""

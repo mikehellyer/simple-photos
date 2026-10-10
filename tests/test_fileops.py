@@ -73,3 +73,17 @@ def test_move_photos_skips_ones_already_there_and_reports_failures(tmp_path):
     (tmp_path / "d").mkdir()
     result = move_photos([str(tmp_path / "missing.jpg")], str(tmp_path / "d"))
     assert result.failed and result.failed[0][0].endswith("missing.jpg")
+
+
+def test_rename_folder(tmp_path):
+    from simple_photos.core.fileops import rename_folder
+
+    (tmp_path / "Rome").mkdir()
+    (tmp_path / "Paris").mkdir()
+    new = rename_folder(str(tmp_path / "Rome"), "Rome 2024")
+    assert new == str(tmp_path / "Rome 2024") and os.path.isdir(new)
+    with pytest.raises(ValueError, match="already"):
+        rename_folder(new, "Paris")
+    with pytest.raises(ValueError):
+        rename_folder(new, "bad:name")
+    assert rename_folder(new, "Rome 2024") == new

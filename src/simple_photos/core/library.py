@@ -425,6 +425,41 @@ class Library:
         self._db.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", (_norm(path),))
         self._db.commit()
 
+    def rename_folder(self, old: str, new: str) -> list[tuple[str, str, float]]:
+        """A folder was renamed on disk: re-point everything in and below
+        it. Returns (old path, new path, mtime) for each photo moved, so
+        their cached thumbnails can follow."""
+        old, new = _norm(old), _norm(new)
+        params = (old, _like_prefix(old))
+        where = "(folder = ? OR folder LIKE ? ESCAPE '\\')"
+        changed = []
+        for photo_id, path, folder, mtime in self._db.execute(
+            f"SELECT id, path, folder, file_mtime FROM photos WHERE {where}", params
+        ).fetchall():
+            new_path = new + path[len(old):]
+            self._db.execute(
+                "UPDATE photos SET path = ?, folder = ? WHERE id = ?", (new_path, new + folder[len(old):], photo_id)
+            )
+            changed.append((path, new_path, mtime))
+        folders = self._db.execute(f"SELECT path FROM folders WHERE {where.replace('folder', 'path')}", params).fetchall()
+        for (folder,) in folders:
+            self._db.execute("DELETE FROM folders WHERE path = ?", (folder,))
+            self._db.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", (new + folder[len(old):],))
+        self._db.commit()
+        return changed
+
+    def refresh_files(self, paths: Iterable[str]) -> None:
+        """Re-read these photos now (e.g. after rotating them), keeping
+        their ratings and tags."""
+        result = ScanResult()
+        for path in paths:
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            self._store(_norm(path), stat, exists=True, result=result)
+        self._db.commit()
+
     def relocate(self, moves: Iterable[tuple[str, str]]) -> None:
         """Photos moved on disk: (old path, new path) pairs. They keep
         their ratings, tags and captions."""

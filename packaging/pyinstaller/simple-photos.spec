@@ -35,14 +35,24 @@ elif sys.platform == "darwin":
 else:
     icon_path = None
 
+# Auto-Rotate's face detectors are data files inside OpenCV's package.
+import cv2
+
+cascades = Path(cv2.data.haarcascades)
+cascade_files = [
+    (str(cascades / name), "cv2/data")
+    for name in ("haarcascade_frontalface_default.xml", "haarcascade_frontalface_alt2.xml", "haarcascade_eye.xml")
+]
+
 a = Analysis(
     [str(src / "simple_photos" / "app.py")],
     pathex=[str(src)],
     binaries=[],
     datas=[
         (str(src / "simple_photos" / "gui" / "resources" / "icon.png"), "simple_photos/gui/resources"),
+        *cascade_files,
     ],
-    hiddenimports=["pillow_heif"],
+    hiddenimports=["pillow_heif", "cv2", "numpy"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

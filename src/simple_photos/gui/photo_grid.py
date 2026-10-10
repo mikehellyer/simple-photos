@@ -110,6 +110,19 @@ class PhotoModel(QAbstractListModel):
                 index = self.index(row)
                 self.dataChanged.emit(index, index, [PhotoRole])
 
+    def drop_thumbnails(self, photo_ids) -> None:
+        """Forget these photos' thumbnails (the photos changed) and repaint
+        them, which makes them load afresh."""
+        ids = set(photo_ids)
+        for key in [key for key in self._pixmaps if key[0] in ids]:
+            del self._pixmaps[key]
+        self._failed = {key for key in self._failed if key[0] not in ids}
+        for photo_id in ids:
+            row = self._row_of.get(photo_id)
+            if row is not None:
+                index = self.index(row)
+                self.dataChanged.emit(index, index, [Qt.DecorationRole])
+
     def cached_pixmap(self, row: PhotoRow) -> QPixmap | None:
         return self._pixmaps.get((row.id, row.file_mtime))
 

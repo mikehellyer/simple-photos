@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QLabel,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +42,7 @@ def decode(path: str) -> QImage:
 class ImageView(QGraphicsView):
     zoom_changed = Signal(float)
     double_clicked = Signal()
+    step_requested = Signal(int)  # the mouse's back / forward buttons
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -110,7 +112,35 @@ class ImageView(QGraphicsView):
             self.zoom_by(1.25 ** steps)
 
     def mouseDoubleClickEvent(self, event) -> None:
-        self.double_clicked.emit()
+        if event.button() == Qt.LeftButton:
+            self.double_clicked.emit()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() in (Qt.BackButton, Qt.ForwardButton):
+            self.step_requested.emit(-1 if event.button() == Qt.BackButton else 1)
+            return
+        super().mousePressEvent(event)
+
+
+class _NavButton(QToolButton):
+    """A big round ‹ or › floating over the edge of the photo."""
+
+    SIZE = 56
+
+    def __init__(self, text: str, tip: str, parent):
+        super().__init__(parent)
+        self.setText(text)
+        self.setToolTip(tip)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setStyleSheet(
+            # Mid-grey so it shows over both dark and light photos.
+            f"QToolButton {{ background: rgba(90, 90, 90, 140); color: white; border: none;"
+            f" border-radius: {self.SIZE // 2}px; font-size: 34px; padding-bottom: 4px; }}"
+            "QToolButton:hover { background: rgba(60, 60, 60, 210); }"
+            "QToolButton:pressed { background: rgba(140, 140, 140, 210); }"
+        )
 
 
 class ViewerPage(QWidget):
@@ -122,6 +152,7 @@ class ViewerPage(QWidget):
     current_changed = Signal(int)
     position_changed = Signal(str)
     rate_requested = Signal(int)
+    rotate_requested = Signal(int)  # quarter turns clockwise (-1 = anticlockwise)
     fullscreen_toggled = Signal()
 
     def __init__(self, runner: BackgroundRunner, parent=None):
@@ -140,12 +171,21 @@ class ViewerPage(QWidget):
         self.view = ImageView()
         self.view.double_clicked.connect(self._toggle_fit)
         self.view.zoom_changed.connect(lambda z: self._zoom_label.setText(f"{z * 100:.0f}%"))
+        self.view.step_requested.connect(self.step)
         layout.addWidget(self.view, 1)
+        self._previous_button = _NavButton("‹", "Previous photo (←)", self)
+        self._previous_button.clicked.connect(lambda: self.step(-1))
+        self._next_button = _NavButton("›", "Next photo (→)", self)
+        self._next_button.clicked.connect(lambda: self.step(1))
 
         def action(text, shortcuts, slot, tip=""):
             act = QAction(text, self)
             act.setShortcuts([QKeySequence(s) for s in shortcuts])
-            act.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            # Anywhere in the window while the viewer is showing — not just
+            # when the photo has focus, so ← → keep working after clicking
+            # the info panel. (Text boxes still get their own arrow keys,
+            # and a hidden viewer's shortcuts never fire.)
+            act.setShortcutContext(Qt.WindowShortcut)
             act.setToolTip(f"{tip or text} ({QKeySequence(shortcuts[0]).toString(QKeySequence.NativeText)})" if shortcuts else text)
             act.triggered.connect(slot)
             self.addAction(act)
@@ -153,9 +193,10 @@ class ViewerPage(QWidget):
 
         self._toolbar.addAction(action("◀ Grid", ["Esc"], self.close_requested.emit, "Back to the grid"))
         self._toolbar.addSeparator()
-        self._toolbar.addAction(action("‹ Prev", ["Left", "PgUp", "Backspace"], lambda: self.step(-1), "Previous photo"))
-        self._toolbar.addAction(action("Next ›", ["Right", "PgDown", "Space"], lambda: self.step(1), "Next photo"))
-        self._toolbar.addSeparator()
+        action("Previous", ["Left", "PgUp", "Backspace"], lambda: self.step(-1))
+        action("Next", ["Right", "PgDown", "Space"], lambda: self.step(1))
+        action("First", ["Home"], lambda: self.step(-len(self._photos)))
+        action("Last", ["End"], lambda: self.step(len(self._photos)))
         self._toolbar.addAction(action("Fit", ["F"], self.view.fit, "Fit to window"))
         self._toolbar.addAction(action("100%", ["Z"], lambda: self.view.set_zoom(1.0), "Actual size"))
         self._toolbar.addAction(action("−", ["-"], lambda: self.view.zoom_by(0.8), "Zoom out"))
@@ -169,6 +210,12 @@ class ViewerPage(QWidget):
         self._slideshow_action.setCheckable(True)
         self._toolbar.addAction(self._slideshow_action)
         self._toolbar.addAction(action("Full Screen", ["F11"], self.fullscreen_toggled.emit))
+        self._toolbar.addSeparator()
+        for text, turns, tip in (("⟲", -1, "Rotate left (Ctrl+L)"), ("⟳", 1, "Rotate right (Ctrl+R)")):
+            rotate = QAction(text, self)
+            rotate.setToolTip(tip)
+            rotate.triggered.connect(lambda _=False, turns=turns: self.rotate_requested.emit(turns))
+            self._toolbar.addAction(rotate)
         self._toolbar.addSeparator()
         self._stars = StarRating()
         self._stars.rating_changed.connect(self.rate_requested)
@@ -186,11 +233,36 @@ class ViewerPage(QWidget):
     def set_toolbar_visible(self, visible: bool) -> None:
         self._toolbar.setVisible(visible)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._place_nav_buttons()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._place_nav_buttons()
+
+    def _place_nav_buttons(self) -> None:
+        area = self.view.geometry()
+        y = area.center().y() - _NavButton.SIZE // 2
+        self._previous_button.move(area.left() + 16, y)
+        self._next_button.move(area.right() - 16 - _NavButton.SIZE, y)
+        self._previous_button.raise_()
+        self._next_button.raise_()
+
+    def _update_nav_buttons(self) -> None:
+        self._previous_button.setVisible(self._row > 0)
+        self._next_button.setVisible(0 <= self._row < len(self._photos) - 1)
+
     # --- which photo ----------------------------------------------------
 
     def show_photos(self, photos: list[PhotoRow], row: int) -> None:
         self._photos = photos
         self._show(row)
+
+    def reload_current(self) -> None:
+        """Decode the current photo again (it was rotated)."""
+        if self.current_photo() is not None:
+            self._show(self._row)
 
     def current_row(self) -> int:
         return self._row
@@ -211,6 +283,7 @@ class ViewerPage(QWidget):
 
     def _show(self, row: int) -> None:
         self._row = row
+        self._update_nav_buttons()
         photo = self.current_photo()
         if photo is None:
             self.view.clear()

@@ -44,16 +44,49 @@ All of these apply to every selected photo. The info panel also shows each
 photo's date, size, camera, lens, exposure, and GPS location, which links to
 OpenStreetMap.
 
-**Viewer.** Double-click (or Enter) to open a photo. Use ← → or Space to move
-through photos and Esc to go back. Scroll to zoom, drag to pan, and
-double-click to switch between fit and 100%. F11 goes full screen and **S**
-starts a slideshow.
+**Viewer.** Double-click (or Enter) to open a photo. Move through photos with
+the big ‹ › arrows at the sides, with ← → (or Space, Home and End), or with
+your mouse's back and forward buttons. The keys keep working after you click
+in the info panel, except while you're typing in a text box. Esc goes back
+to the grid. Scroll to zoom, drag to pan, and double-click to switch between
+fit and 100%. F11 goes full screen and **S** starts a slideshow.
 
 **Folders.** **File ▸ New Folder…** (Ctrl+Shift+N) makes a real folder on
 disk inside the folder picked in the sidebar. You can also right-click any
 folder in the sidebar and choose **New Folder…**. Names that wouldn't work on
 Windows, macOS or Linux are refused as you type. Empty folders show in the tree
 too, so a new folder is ready to fill.
+
+**Renaming folders.** Right-click a folder in the sidebar and choose **Rename
+Folder…**, or pick it and press **F2**. The photos inside keep their ratings,
+tags and captions. Renaming one of your collection folders updates Settings
+too.
+
+**Rotating.** **Rotate Left** (Ctrl+L) and **Rotate Right** (Ctrl+R) work on
+the selected photos, on the right-click menu and from the ⟲ ⟳ buttons in the
+viewer. Rotating never costs any quality:
+
+- For a JPEG, only the orientation flag in the file changes. This is the same
+  flag a camera sets when you hold it sideways, and every modern viewer, phone
+  and browser follows it.
+- PNG, TIFF and BMP files are turned and saved again, which is also lossless.
+- WebP and HEIC files are left alone, because re-saving them would lose
+  quality.
+
+The file keeps its date either way.
+
+**Auto-Rotate…** (Photo menu) looks for photos that are on their side or
+upside down, which usually means they lost their camera orientation (scans,
+edited copies, photos sent through messaging apps). It checks the selected
+photos, or everything shown if you've selected one or none.
+
+It goes by faces. Each photo is tried at all four quarter turns, and if
+faces appear only when it's turned, that's the way up it should be. A face
+only counts when two detectors agree and eyes are found in it, so patterns
+aren't mistaken for faces. You get a preview of each suggested photo, shown
+the way it will look after rotating, and untick any you don't want before
+anything changes. Photos without people give no clear answer and are left as
+they are, so use Rotate Left / Right for those.
 
 **Moving photos.** Select one or more photos and choose **Photo ▸ Move to
 Folder…** (Ctrl+Shift+M, also on the right-click menu and in the viewer).
@@ -71,6 +104,9 @@ restored).
 
 **Formats**: JPEG, PNG, TIFF, WebP, GIF, BMP, and HEIC/HEIF/AVIF (iPhone
 photos).
+
+Face detection uses [OpenCV](https://opencv.org)'s bundled Haar cascades and
+runs entirely on your computer. OpenCV adds about 55 MB to the installers.
 
 ### Not yet
 
@@ -113,8 +149,11 @@ pytest
   - `metadata.py`: EXIF reading and display formatting
   - `library.py`: the SQLite catalogue, scanning, queries, ratings and tags
   - `thumbnails.py`: decoding photos the right way up, and the thumbnail cache
-  - `fileops.py`: making folders, moving photos, and showing a file in the
-    system's file manager
+  - `fileops.py`: making, renaming and moving folders and photos, and
+    showing a file in the system's file manager
+  - `rotation.py`: lossless rotation (the JPEG orientation tag, or re-saving
+    lossless formats)
+  - `autorotate.py`: spotting sideways photos by their faces (OpenCV)
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,
   info panel and viewer.

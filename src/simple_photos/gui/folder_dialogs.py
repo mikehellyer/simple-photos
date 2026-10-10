@@ -1,6 +1,7 @@
 """Dialogs for making a new folder and for choosing where to move photos."""
 from __future__ import annotations
 
+import html
 import os
 from typing import Optional
 
@@ -26,25 +27,34 @@ def short_path(path: str) -> str:
     return "~" + path[len(home):] if path.startswith(home + os.sep) else path
 
 
-class NewFolderDialog(QDialog):
-    def __init__(self, parent_folder: str, parent=None):
+class FolderNameDialog(QDialog):
+    """Asks for a folder name, checking it as it's typed — for a new
+    folder inside parent_folder, or (with renaming) a new name for one."""
+
+    def __init__(self, parent_folder: str, parent=None, renaming: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("New Folder")
+        self.setWindowTitle("Rename Folder" if renaming else "New Folder")
         self.setMinimumWidth(420)
         self._parent_folder = parent_folder
+        self._renaming = renaming
         layout = QVBoxLayout(self)
-        where = QLabel(f"Inside <b>{short_path(parent_folder)}</b>")
+        where = QLabel(
+            f"Rename <b>{html.escape(short_path(renaming))}</b> to:" if renaming
+            else f"Inside <b>{html.escape(short_path(parent_folder))}</b>"
+        )
         where.setTextFormat(Qt.RichText)
+        where.setWordWrap(True)
         layout.addWidget(where)
-        self._name = QLineEdit()
+        self._name = QLineEdit(os.path.basename(renaming) if renaming else "")
         self._name.setPlaceholderText("Folder name")
+        self._name.selectAll()
         self._name.textChanged.connect(self._validate)
         layout.addWidget(self._name)
         self._problem = QLabel()
         self._problem.setStyleSheet("color: #c0392b;")
         layout.addWidget(self._problem)
         self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self._buttons.button(QDialogButtonBox.Ok).setText("Create")
+        self._buttons.button(QDialogButtonBox.Ok).setText("Rename" if renaming else "Create")
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
@@ -56,26 +66,39 @@ class NewFolderDialog(QDialog):
     def _validate(self) -> None:
         name = self._name.text()
         problem = folder_name_problem(name) if name else None
-        if not problem and name and os.path.lexists(os.path.join(self._parent_folder, name)):
-            problem = f"There's already something called “{name}” here."
+        target = os.path.join(self._parent_folder, name)
+        unchanged = bool(self._renaming) and name == os.path.basename(self._renaming)
+        if not problem and name and not unchanged and os.path.lexists(target):
+            same = bool(self._renaming) and os.path.exists(self._renaming) and os.path.samefile(target, self._renaming)
+            if not same:
+                problem = f"There's already something called “{name}” here."
         self._problem.setText(problem or "")
-        self._buttons.button(QDialogButtonBox.Ok).setEnabled(bool(name) and problem is None)
+        self._buttons.button(QDialogButtonBox.Ok).setEnabled(bool(name) and problem is None and not unchanged)
 
 
 def make_new_folder(library: Library, parent_folder: str, widget) -> Optional[str]:
     """Ask for a name and make the folder. Its path, or None if cancelled
     or it couldn't be made (the user has already been told why)."""
-    dialog = NewFolderDialog(parent_folder, widget)
+    dialog = FolderNameDialog(parent_folder, widget)
     if not dialog.exec():
         return None
     try:
         path = create_folder(parent_folder, dialog.name())
     except (ValueError, OSError) as error:
-        message = str(error) if isinstance(error, ValueError) else (error.strerror or str(error))
-        QMessageBox.warning(widget, "New Folder", f"Couldn't make the folder: {message}")
+        QMessageBox.warning(widget, "New Folder", f"Couldn't make the folder: {_reason(error)}")
         return None
     library.add_folder(path)
     return path
+
+
+def ask_folder_rename(folder: str, widget) -> Optional[str]:
+    """The new name the user wants for folder, or None if cancelled."""
+    dialog = FolderNameDialog(os.path.dirname(folder), widget, renaming=folder)
+    return dialog.name() if dialog.exec() else None
+
+
+def _reason(error: Exception) -> str:
+    return str(error) if isinstance(error, ValueError) else (getattr(error, "strerror", None) or str(error))
 
 
 class MoveToFolderDialog(QDialog):

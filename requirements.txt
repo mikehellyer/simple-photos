@@ -3,3 +3,5 @@ platformdirs
 certifi
 Pillow
 pillow-heif
+numpy
+opencv-python-headless>=4.10,<5

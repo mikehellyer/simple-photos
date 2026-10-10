@@ -27,6 +27,15 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm packaging/pyinstaller/simple-photos.spec
 
+      - name: Self-test the built app
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Linux)   dist/Simple-Photos/Simple-Photos --self-test ;;
+            macOS)   dist/Simple-Photos.app/Contents/MacOS/Simple-Photos --self-test ;;
+            Windows) powershell -Command '$p = Start-Process dist/Simple-Photos/Simple-Photos.exe -ArgumentList "--self-test" -Wait -PassThru; exit $p.ExitCode' ;;
+          esac
+
       - name: Package (.deb)
         if: runner.os == 'Linux'
         run: bash packaging/linux/build-deb.sh

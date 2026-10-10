@@ -196,3 +196,43 @@ def test_stopped_scan_removes_nothing(library, collection):
     result = library.scan([collection], should_stop=lambda: True)
     assert (result.added, result.removed) == (0, 0)
     assert library.count() == 3
+
+
+def test_renamed_folder_keeps_photos_and_subfolders(library, collection):
+    (collection / "2024" / "party" / "Empty").mkdir()
+    library.scan([collection])
+    cake = library.query(PhotoFilter(text="cake"))[0]
+    library.add_tag([cake.id], "Birthday")
+    os.rename(collection / "2024", collection / "Year 2024")
+    changed = library.rename_folder(str(collection / "2024"), str(collection / "Year 2024"))
+    assert [os.path.basename(new) for _, new, _ in changed] == ["cake.jpg"]
+    moved = library.photo(cake.id)
+    assert moved.path == str(collection / "Year 2024" / "party" / "cake.jpg")
+    assert moved.folder == str(collection / "Year 2024" / "party")
+    counts = library.folder_counts()
+    assert str(collection / "Year 2024" / "party" / "Empty") in counts
+    assert not any(f.startswith(str(collection / "2024")) for f in counts)
+    assert library.scan([collection]).added == 0
+    assert library.tags_for([cake.id]) == {"Birthday": 1}
+
+
+def test_rename_folder_leaves_similarly_named_folders(library, tmp_path):
+    make_photo(tmp_path / "p" / "a" / "1.jpg")
+    make_photo(tmp_path / "p" / "ab" / "2.jpg")
+    library.scan([tmp_path / "p"])
+    os.rename(tmp_path / "p" / "a", tmp_path / "p" / "z")
+    library.rename_folder(str(tmp_path / "p" / "a"), str(tmp_path / "p" / "z"))
+    assert sorted(row.path for row in library.query(PhotoFilter())) == [
+        str(tmp_path / "p" / "ab" / "2.jpg"),
+        str(tmp_path / "p" / "z" / "1.jpg"),
+    ]
+
+
+def test_refresh_files_rereads_a_changed_photo(library, collection):
+    library.scan([collection])
+    beach = library.query(PhotoFilter(text="beach"))[0]
+    library.set_rating([beach.id], 3)
+    make_photo(collection / "2023" / "beach.jpg", size=(30, 90))
+    library.refresh_files([beach.path])
+    photo = library.photo(beach.id)
+    assert (photo.width, photo.height, photo.rating) == (30, 90, 3)

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QSlider,
     QSplitter,
     QStackedWidget,
@@ -27,13 +28,16 @@ from PySide6.QtWidgets import (
 
 from simple_photos import __version__
 from simple_photos.core.diagnostics import log_dir, log_event
-from simple_photos.core.fileops import move_photos, reveal_in_file_manager
+from simple_photos.core import autorotate
+from simple_photos.core.fileops import move_photos, rename_folder, reveal_in_file_manager
 from simple_photos.core.library import Library, PhotoFilter, ScanResult
 from simple_photos.core.self_update import download_asset, find_asset_for_this_platform, launch_installer
 from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
-from simple_photos.core.thumbnails import move_thumbnail
+from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
+from simple_photos.core.thumbnails import ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
-from simple_photos.gui.folder_dialogs import MoveToFolderDialog, make_new_folder, short_path
+from simple_photos.gui.autorotate_dialog import AutoRotateDialog
+from simple_photos.gui.folder_dialogs import MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
 from simple_photos.gui.info_panel import InfoPanel
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
 from simple_photos.gui.settings_dialog import SettingsDialog, normalise
@@ -67,7 +71,10 @@ class MainWindow(QMainWindow):
         self._scan_worker: ScanWorker | None = None
         self._last_scan_refresh = 0.0
         self._rescan_after = False
-        self._moving = False
+        self._moving = False  # moving or rotating files
+        self._auto_thread: QThread | None = None
+        self._auto_worker: ScanWorker | None = None
+        self._auto_progress: QProgressDialog | None = None
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -83,6 +90,7 @@ class MainWindow(QMainWindow):
         self._sidebar.tags_edited.connect(self._tags_changed)
         self._sidebar.photos_dropped.connect(self._photos_dropped)
         self._sidebar.new_folder_requested.connect(self._new_folder)
+        self._sidebar.rename_folder_requested.connect(self._rename_folder)
         self._sidebar.reveal_requested.connect(lambda folder: QDesktopServices.openUrl(QUrl.fromLocalFile(folder)))
         self._splitter.addWidget(self._sidebar)
 
@@ -97,6 +105,7 @@ class MainWindow(QMainWindow):
         self._viewer.rate_requested.connect(lambda rating: self._rate_photos(self._viewer_ids(), rating))
         self._viewer.fullscreen_toggled.connect(self._toggle_fullscreen)
         self._viewer.position_changed.connect(self._show_viewer_position)
+        self._viewer.rotate_requested.connect(lambda turns: self._rotate_photos([(row, turns) for row in self._active_rows()]))
         self._stack.addWidget(self._viewer)
         self._splitter.addWidget(self._stack)
 
@@ -207,6 +216,7 @@ class MainWindow(QMainWindow):
 
         file_menu = self.menuBar().addMenu("&File")
         action(file_menu, "New Folder…", "Ctrl+Shift+N", lambda: self._new_folder(None))
+        action(file_menu, "Rename Folder…", "F2", lambda: self._rename_folder(None))
         action(file_menu, "Add Folder to Collection…", "Ctrl+O", self._add_folder)
         action(file_menu, "Look for New Photos", "F5", self.rescan)
         file_menu.addSeparator()
@@ -220,13 +230,17 @@ class MainWindow(QMainWindow):
         reveal_action = action(photo_menu, "Show in File Manager", "Ctrl+Shift+R", self._reveal)
         move_action = action(photo_menu, "Move to Folder…", "Ctrl+Shift+M", self._move_to_folder)
         photo_menu.addSeparator()
+        left_action = action(photo_menu, "Rotate Left", "Ctrl+L", lambda: self._rotate_photos([(row, -1) for row in self._active_rows()]))
+        right_action = action(photo_menu, "Rotate Right", "Ctrl+R", lambda: self._rotate_photos([(row, 1) for row in self._active_rows()]))
+        action(photo_menu, "Auto-Rotate…", None, self._auto_rotate)
+        photo_menu.addSeparator()
         rate_menu = photo_menu.addMenu("Rate")
         for rating in range(6):
             action(rate_menu, "No rating" if rating == 0 else "★" * rating, f"Ctrl+{rating}", lambda r=rating: self._rate_photos(self._active_ids(), r))
         action(photo_menu, "Add Tag…", "Ctrl+T", self._focus_tags)
         photo_menu.addSeparator()
         trash_action = action(photo_menu, "Move to Trash", QKeySequence.Delete, self._trash, local=True)
-        for act in (view_action, open_action, reveal_action, move_action):
+        for act in (view_action, open_action, reveal_action, move_action, left_action, right_action):
             self._grid.addAction(act)
         separator = QAction(self)
         separator.setSeparator(True)
@@ -550,15 +564,9 @@ class MainWindow(QMainWindow):
             self._move_photos(rows, folder)
 
     def _move_photos(self, rows, destination: str) -> None:
-        if self._moving:
-            self._status.showMessage("Still moving the last photos — try again in a moment", 5000)
+        if self._busy_with_files():
             return
-        if self._scan_thread is not None:
-            # A scan running alongside could see a photo vanish from its
-            # old folder and drop its tags. Stop it (it then removes
-            # nothing) and look again once the move is done.
-            self._stop_scan()
-            self._rescan_after = True
+        self._pause_scan()
         self._info.save_caption()
         self._moving = True
         self._status.showMessage(f"Moving {len(rows):,} photo{'s' if len(rows) != 1 else ''}…")
@@ -596,9 +604,196 @@ class MainWindow(QMainWindow):
                 self._status.showMessage(f"Moved {moved:,} photo{'s' if moved != 1 else ''} to {where}", 6000)
             else:
                 self._status.showMessage(f"Already in {where}", 5000)
-        if self._rescan_after and self._scan_thread is None:
+        self._rescan_if_pending()
+
+    def _busy_with_files(self) -> bool:
+        if self._moving:
+            self._status.showMessage("Still busy with the last photos — try again in a moment", 5000)
+        return self._moving
+
+    def _pause_scan(self) -> None:
+        """Before moving, renaming or rotating files: a scan running
+        alongside could see a photo vanish from its old place and drop its
+        tags. Stop it (a stopped scan removes nothing) and look again
+        afterwards."""
+        if self._scan_thread is not None:
+            self._stop_scan()
+            self._rescan_after = True
+
+    def _rescan_if_pending(self) -> None:
+        if self._rescan_after and self._scan_thread is None and not self._moving:
             self._rescan_after = False
             self.rescan()
+
+    def _rename_folder(self, folder: str | None) -> None:
+        folder = folder or self._sidebar.selected_folder()
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.information(self, "Rename Folder", "Pick a folder in the Folders list first.")
+            return
+        if self._busy_with_files():
+            return
+        name = ask_folder_rename(folder, self)
+        if not name:
+            return
+        self._pause_scan()
+        self._info.save_caption()
+        try:
+            new = rename_folder(folder, name)
+        except (ValueError, OSError) as error:
+            reason = str(error) if isinstance(error, ValueError) else (error.strerror or str(error))
+            QMessageBox.warning(self, "Rename Folder", f"Couldn't rename the folder: {reason}")
+            self._rescan_if_pending()
+            return
+        changed = self._library.rename_folder(folder, new)
+        roots = self._settings.settings.collection_folders
+        if any(normalise(root) == folder for root in roots):
+            self._settings.update(collection_folders=[new if normalise(root) == folder else root for root in roots])
+        cache_dir = self._model.loader.cache_dir
+        self._runner.run(lambda: [move_thumbnail(old, moved, mtime, cache_dir) for old, moved, mtime in changed], lambda _: None, lambda _: None)
+        self._photos_changed_on_disk()
+        self._sidebar.select_folder(new)
+        self._status.showMessage(f"Renamed to {short_path(new)}", 5000)
+        self._rescan_if_pending()
+
+    # --- rotating -------------------------------------------------------
+
+    def _rotate_photos(self, items) -> None:
+        """items: (photo row, quarter turns clockwise) pairs."""
+        if not items or self._busy_with_files():
+            return
+        rotatable = [(row, turns) for row, turns in items if can_rotate(row.path)]
+        if not rotatable:
+            ext = os.path.splitext(items[0][0].path)[1] or "these"
+            self._status.showMessage(f"Rotating {ext} files isn't supported (it would lose quality)", 6000)
+            return
+        self._pause_scan()
+        self._moving = True
+        self._status.showMessage(f"Rotating {len(rotatable):,} photo{'s' if len(rotatable) != 1 else ''}…")
+        cache_dir = self._model.loader.cache_dir
+
+        def job():
+            done, failed = [], []
+            for row, turns in rotatable:
+                try:
+                    rotate_photo(row.path, turns)
+                except (RotateError, OSError) as error:
+                    failed.append((row, str(error)))
+                    continue
+                # The file keeps its modified time, so drop the old thumbnail by hand.
+                thumbnail_path(row.path, row.file_mtime, cache_dir).unlink(missing_ok=True)
+                done.append(row)
+            return done, failed
+
+        skipped = len(items) - len(rotatable)
+        self._runner.run(job, lambda result: self._on_rotated(result, skipped), lambda error: self._on_rotated(([], [(rotatable[0][0], str(error))]), skipped))
+
+    def _on_rotated(self, result, skipped: int) -> None:
+        done, failed = result
+        self._moving = False
+        self._library.refresh_files([row.path for row in done])
+        self._model.drop_thumbnails([row.id for row in done])
+        current = self._viewer.current_photo()
+        if self._stack.currentWidget() is self._viewer and current and any(row.id == current.id for row in done):
+            self._viewer.reload_current()
+        self._info.show_photos(self._active_ids())
+        if failed:
+            row, reason = failed[0]
+            QMessageBox.warning(self, "Rotate", f"Couldn't rotate {len(failed):,} photo(s).\n\n{row.filename}: {reason}")
+        elif done:
+            extra = f" ({skipped:,} skipped: format not supported)" if skipped else ""
+            self._status.showMessage(f"Rotated {len(done):,} photo{'s' if len(done) != 1 else ''}{extra}", 5000)
+        self._rescan_if_pending()
+
+    def _auto_rotate(self) -> None:
+        if not autorotate.available():
+            QMessageBox.warning(self, "Auto-Rotate", "The face detector Auto-Rotate needs isn't available in this installation.")
+            return
+        if self._auto_thread is not None:
+            return
+        selected = self._active_rows()
+        rows = selected if len(selected) > 1 else list(self._model.photos())
+        if not rows:
+            return
+        cache_dir = self._model.loader.cache_dir
+
+        def job(worker: ScanWorker, cancel):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            found = []
+            with ThreadPoolExecutor(autorotate.worker_count()) as pool:
+                futures = {pool.submit(autorotate.suggested_turns, row.path): row for row in rows}
+                for checked, future in enumerate(as_completed(futures), start=1):
+                    if cancel.is_set():
+                        pool.shutdown(wait=True, cancel_futures=True)
+                        break
+                    try:
+                        turns = future.result()
+                    except Exception:  # unreadable photo: nothing to suggest
+                        turns = None
+                    if turns:
+                        found.append((futures[future], turns))
+                    worker.progress.emit(checked, "")
+            order = {row.id: i for i, row in enumerate(rows)}
+            found.sort(key=lambda pair: order[pair[0].id])
+            return [(row, turns, str(ensure_thumbnail(row.path, row.file_mtime, cache_dir) or "") or None) for row, turns in found]
+
+        progress = QProgressDialog(f"Looking for sideways photos among {len(rows):,}…", "Stop", 0, len(rows), self)
+        progress.setWindowTitle("Auto-Rotate")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        thread = QThread()
+        worker = ScanWorker(job)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_auto_progress, Qt.QueuedConnection)
+        worker.done.connect(self._on_auto_done, Qt.QueuedConnection)
+        progress.canceled.connect(worker.cancel_event.set)
+        self._auto_thread, self._auto_worker, self._auto_progress = thread, worker, progress
+        self._auto_checked = len(rows)
+        thread.start()
+        progress.show()
+
+    @Slot(int, str)
+    def _on_auto_progress(self, checked: int, _unused: str) -> None:
+        if self._auto_progress is not None:
+            self._auto_progress.setValue(checked)
+
+    @Slot(object)
+    def _on_auto_done(self, result) -> None:
+        thread, progress = self._auto_thread, self._auto_progress
+        stopped = self._auto_worker is not None and self._auto_worker.cancel_event.is_set()
+        self._auto_thread = self._auto_worker = self._auto_progress = None
+        if thread is not None:
+            thread.quit()
+            thread.wait()
+            thread.deleteLater()
+        if progress is not None:
+            progress.close()
+            progress.deleteLater()
+        if isinstance(result, Exception):
+            log_event(f"auto-rotate failed: {result!r}")
+            QMessageBox.warning(self, "Auto-Rotate", f"Auto-Rotate stopped: {result}")
+            return
+        rotatable = [s for s in result if can_rotate(s[0].path)]
+        skipped = len(result) - len(rotatable)
+        if not rotatable:
+            if stopped and not result:
+                return
+            QMessageBox.information(
+                self,
+                "Auto-Rotate",
+                ("Stopped early. " if stopped else "")
+                + "No sideways photos found"
+                + (f" ({skipped:,} found in formats that can't be rotated)" if skipped else "")
+                + ".\n\nAuto-Rotate goes by faces, so photos without people in them are left as they are. "
+                "Use Rotate Left / Right (Ctrl+L / Ctrl+R) for those.",
+            )
+            return
+        dialog = AutoRotateDialog(rotatable, skipped, self)
+        if dialog.exec():
+            self._rotate_photos(dialog.chosen())
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add a Folder to the Collection")
@@ -765,6 +960,11 @@ class MainWindow(QMainWindow):
         self._info.save_caption()
         self._settings.save()
         self._stop_scan()
+        if self._auto_worker is not None:
+            self._auto_worker.cancel_event.set()
+        if self._auto_thread is not None:
+            self._auto_thread.quit()
+            self._auto_thread.wait()
         self._model.loader.shutdown()
         self._runner.shutdown(BACKGROUND_JOIN_TIMEOUT_MS)
         self._library.close()
