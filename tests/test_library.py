@@ -275,7 +275,8 @@ def test_edits_dont_wait_for_a_scan(tmp_path, monkeypatch):
     ui = Library(tmp_path / "lib.db")
     ui.scan([root])
     photo_id = ui.query(PhotoFilter())[0].id
-    for i in range(40):
+    # 80 slow photos: the old code held the lock for all of them (1.6 s+).
+    for i in range(80):
         make_photo(root / "new" / f"{i}.jpg", size=(8, 8))
     real = library_module.read_photo_info
     monkeypatch.setattr(library_module, "read_photo_info", lambda path: (time.sleep(0.02), real(path))[1])
@@ -295,5 +296,6 @@ def test_edits_dont_wait_for_a_scan(tmp_path, monkeypatch):
         waits.append(time.monotonic() - start)
         time.sleep(0.05)
     worker.join()
-    assert waits and max(waits) < 0.25
-    assert ui.count() == 41
+    # Generous for slow, shared CI machines; the bug was seconds long.
+    assert waits and max(waits) < 0.6
+    assert ui.count() == 81
