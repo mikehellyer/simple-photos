@@ -1,12 +1,20 @@
 from simple_photos.core.devices import Volume, camera_name, pick_devices
 
 
-def test_linux_desktop_mounts_and_gvfs_cameras(tmp_path):
-    gvfs = tmp_path / "gvfs"
-    gvfs.mkdir()
-    (gvfs / "mtp:host=Google_Pixel_7_2B1C3D4E5F").mkdir()
-    (gvfs / "gphoto2:host=Canon_Inc._Canon_EOS_R6").mkdir()
-    (gvfs / "smb-share:server=nas,share=photos").mkdir()  # a network share: not a device
+def test_linux_desktop_mounts_and_gvfs_cameras(monkeypatch):
+    # gvfs's folder names contain ":", which Windows can't create — so the
+    # listing is faked rather than made on disk.
+    import simple_photos.core.devices as devices
+
+    gvfs = "/run/user/1000/gvfs"
+    entries = {
+        gvfs: [
+            "gphoto2:host=Canon_Inc._Canon_EOS_R6",
+            "mtp:host=Google_Pixel_7_2B1C3D4E5F",
+            "smb-share:server=nas,share=photos",  # a network share: not a device
+        ]
+    }
+    monkeypatch.setattr(devices, "_list_dir", lambda path: entries.get(path, []))
     volumes = [
         Volume("/"),
         Volume("/home"),
@@ -15,8 +23,8 @@ def test_linux_desktop_mounts_and_gvfs_cameras(tmp_path):
         Volume("/run/media/mike/EOS_DIGITAL", ""),
         Volume("/snap/core/123", read_only=True),
     ]
-    devices = pick_devices(volumes, platform="linux", gvfs_dir=str(gvfs))
-    assert [(d.name, d.kind) for d in devices] == [
+    found = pick_devices(volumes, platform="linux", gvfs_dir=gvfs)
+    assert [(d.name, d.kind) for d in found] == [
         ("KINGSTON", "drive"),
         ("EOS_DIGITAL", "drive"),
         ("Canon Inc. Canon EOS R6", "camera"),
