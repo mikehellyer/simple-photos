@@ -47,8 +47,10 @@ OpenStreetMap.
 **Viewer.** Double-click (or Enter) to open a photo. Move through photos with
 the big ‹ › arrows at the sides, with ← → (or Space, Home and End), or with
 your mouse's back and forward buttons. The keys keep working after you click
-in the info panel, except while you're typing in a text box. Esc goes back
-to the grid. Scroll to zoom, drag to pan, and double-click to switch between
+in the info panel, except while you're typing in a text box. The ✕ in the
+photo's top-right corner, **◀ Grid** or Esc goes back to the grid. **Move**
+and **Delete** on the viewer's toolbar move the photo to another folder or
+send it to the Trash (after asking), then go on to the next photo. Scroll to zoom, drag to pan, and double-click to switch between
 fit and 100%. F11 goes full screen and **S** starts a slideshow.
 
 **Folders.** **File ▸ New Folder…** (Ctrl+Shift+N) makes a real folder on

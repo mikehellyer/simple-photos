@@ -123,21 +123,22 @@ class ImageView(QGraphicsView):
 
 
 class _NavButton(QToolButton):
-    """A big round ‹ or › floating over the edge of the photo."""
+    """A round button floating over the photo: the big ‹ and › at its
+    edges, and the smaller ✕ in its top-right corner."""
 
     SIZE = 56
 
-    def __init__(self, text: str, tip: str, parent):
+    def __init__(self, text: str, tip: str, parent, size: int = SIZE, font_px: int = 34):
         super().__init__(parent)
         self.setText(text)
         self.setToolTip(tip)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setFixedSize(size, size)
         self.setStyleSheet(
             # Mid-grey so it shows over both dark and light photos.
             f"QToolButton {{ background: rgba(90, 90, 90, 140); color: white; border: none;"
-            f" border-radius: {self.SIZE // 2}px; font-size: 34px; padding-bottom: 4px; }}"
+            f" border-radius: {size // 2}px; font-size: {font_px}px; padding-bottom: {font_px // 9}px; }}"
             "QToolButton:hover { background: rgba(60, 60, 60, 210); }"
             "QToolButton:pressed { background: rgba(140, 140, 140, 210); }"
         )
@@ -148,7 +149,10 @@ class ViewerPage(QWidget):
     current_changed(row) when moving to another photo,
     rate_requested(rating), fullscreen_toggled."""
 
-    close_requested = Signal()
+    close_requested = Signal()  # Esc: leaves full screen first, if it's on
+    back_requested = Signal()  # the ✕: straight back to the grid
+    move_requested = Signal()
+    trash_requested = Signal()
     current_changed = Signal(int)
     position_changed = Signal(str)
     rate_requested = Signal(int)
@@ -177,6 +181,8 @@ class ViewerPage(QWidget):
         self._previous_button.clicked.connect(lambda: self.step(-1))
         self._next_button = _NavButton("›", "Next photo (→)", self)
         self._next_button.clicked.connect(lambda: self.step(1))
+        self._close_button = _NavButton("✕", "Back to the grid (Esc)", self, size=44, font_px=22)
+        self._close_button.clicked.connect(self.back_requested)
 
         def action(text, shortcuts, slot, tip=""):
             act = QAction(text, self)
@@ -217,6 +223,16 @@ class ViewerPage(QWidget):
             rotate.triggered.connect(lambda _=False, turns=turns: self.rotate_requested.emit(turns))
             self._toolbar.addAction(rotate)
         self._toolbar.addSeparator()
+        # Their shortcuts (Ctrl+Shift+M, Delete) belong to the window's Photo menu.
+        for text, signal, tip in (
+            ("Move…", self.move_requested, "Move this photo to another folder (Ctrl+Shift+M)"),
+            ("Delete", self.trash_requested, "Move this photo to the Trash (Delete)"),
+        ):
+            button = QAction(text, self)
+            button.setToolTip(tip)
+            button.triggered.connect(signal)
+            self._toolbar.addAction(button)
+        self._toolbar.addSeparator()
         self._stars = StarRating()
         self._stars.rating_changed.connect(self.rate_requested)
         self._toolbar.addWidget(self._stars)
@@ -246,8 +262,9 @@ class ViewerPage(QWidget):
         y = area.center().y() - _NavButton.SIZE // 2
         self._previous_button.move(area.left() + 16, y)
         self._next_button.move(area.right() - 16 - _NavButton.SIZE, y)
-        self._previous_button.raise_()
-        self._next_button.raise_()
+        self._close_button.move(area.right() - 16 - self._close_button.width(), area.top() + 16)
+        for button in (self._previous_button, self._next_button, self._close_button):
+            button.raise_()
 
     def _update_nav_buttons(self) -> None:
         self._previous_button.setVisible(self._row > 0)
