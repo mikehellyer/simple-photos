@@ -36,7 +36,9 @@ from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
 from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
 from simple_photos.core.thumbnails import ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
+from simple_photos.core import duplicates
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
+from simple_photos.gui.duplicates_dialog import DuplicatesDialog, FindDuplicatesDialog
 from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
 from simple_photos.gui.info_panel import InfoPanel
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
@@ -75,6 +77,8 @@ class MainWindow(QMainWindow):
         self._auto_thread: QThread | None = None
         self._auto_worker: ScanWorker | None = None
         self._auto_progress: QProgressDialog | None = None
+        self._auto_on_done = None
+        self._auto_checked = 0
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -238,6 +242,7 @@ class MainWindow(QMainWindow):
         left_action = action(photo_menu, "Rotate Left", "Ctrl+L", lambda: self._rotate_photos([(row, -1) for row in self._active_rows()]))
         right_action = action(photo_menu, "Rotate Right", "Ctrl+R", lambda: self._rotate_photos([(row, 1) for row in self._active_rows()]))
         action(photo_menu, "Auto-Rotate…", None, self._auto_rotate)
+        action(photo_menu, "Find Duplicates…", None, self._find_duplicates)
         photo_menu.addSeparator()
         rate_menu = photo_menu.addMenu("Rate")
         for rating in range(6):
@@ -760,6 +765,109 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"Rotated {len(done):,} photo{'s' if len(done) != 1 else ''}{extra}", 5000)
         self._rescan_if_pending()
 
+    # --- duplicates -----------------------------------------------------
+
+    def _find_duplicates(self) -> None:
+        if self._auto_thread is not None or self._busy_with_files():
+            return
+        total = self._library.count()
+        if total < 2:
+            QMessageBox.information(self, "Find Duplicates", "There aren't enough photos in the library to compare yet.")
+            return
+        options = FindDuplicatesDialog(self._model.rowCount(), total, self)
+        if not options.exec():
+            return
+        mode = options.mode()
+        only = [row.id for row in self._model.photos()] if options.only_shown() else None
+        db_path = self._library.db_path
+        cache_dir = self._model.loader.cache_dir
+
+        def job(worker: ScanWorker, cancel):
+            library = Library(db_path)
+            try:
+                return duplicates.search(
+                    library,
+                    library.duplicate_candidates(only),
+                    mode,
+                    progress=lambda done, total, stage: worker.progress.emit(done, f"{total}\t{stage}"),
+                    should_stop=cancel.is_set,
+                    cache_dir=cache_dir,
+                    workers=autorotate.worker_count(),
+                )
+            finally:
+                library.close()
+
+        self._start_background_check("Find Duplicates", "Looking for duplicates…", job, self._on_duplicates_found)
+
+    def _start_background_check(self, title: str, label: str, job, on_done) -> None:
+        """Run job(worker, cancel) on its own thread behind a progress
+        window with a Stop button (Auto-Rotate, Find Duplicates)."""
+        progress = QProgressDialog(label, "Stop", 0, 0, self)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        thread = QThread()
+        worker = ScanWorker(job)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_auto_progress, Qt.QueuedConnection)
+        worker.done.connect(self._on_background_check_done, Qt.QueuedConnection)
+        progress.canceled.connect(worker.cancel_event.set)
+        self._auto_thread, self._auto_worker, self._auto_progress = thread, worker, progress
+        self._auto_on_done = on_done
+        thread.start()
+        progress.show()
+
+    @Slot(object)
+    def _on_background_check_done(self, result) -> None:
+        on_done = self._auto_on_done
+        self._auto_on_done = None
+        self._on_auto_done(result, on_done)
+
+    def _on_duplicates_found(self, result, stopped: bool) -> None:
+        if isinstance(result, Exception):
+            log_event(f"find duplicates failed: {result!r}")
+            QMessageBox.warning(self, "Find Duplicates", f"The search stopped: {result}")
+            return
+        if result.stopped:
+            self._status.showMessage("Stopped looking for duplicates — what was checked is remembered for next time", 6000)
+            return
+        if not result.groups:
+            QMessageBox.information(self, "Find Duplicates", f"No duplicates found among {result.checked:,} photos.")
+            return
+        dialog = DuplicatesDialog(result, self)
+        if dialog.exec():
+            self._remove_duplicates(dialog.chosen())
+
+    def _remove_duplicates(self, choices: list[tuple[list[int], list[int]]]) -> None:
+        if not choices or self._busy_with_files():
+            return
+        self._pause_scan()
+        self._info.save_caption()
+        trashed, failed = [], []
+        for keep, remove in choices:
+            removed_here = []
+            for photo_id in remove:
+                photo = self._library.photo(photo_id)
+                if photo is None:
+                    continue
+                (removed_here if QFile.moveToTrash(photo.path) else failed).append(photo)
+            if removed_here:
+                self._library.merge_into(keep[0], [p.id for p in removed_here])
+                self._library.forget([p.id for p in removed_here])
+                trashed += removed_here
+        self._photos_changed_on_disk()
+        if failed:
+            QMessageBox.warning(
+                self, "Find Duplicates",
+                f"Moved {len(trashed):,} to the Trash, but {len(failed):,} couldn't be moved, e.g. {failed[0].path}",
+            )
+        else:
+            self._status.showMessage(f"Moved {len(trashed):,} duplicate{'s' if len(trashed) != 1 else ''} to the Trash", 6000)
+        self._rescan_if_pending()
+
     def _auto_rotate(self) -> None:
         if not autorotate.available():
             QMessageBox.warning(self, "Auto-Rotate", "The face detector Auto-Rotate needs isn't available in this installation.")
@@ -793,41 +901,40 @@ class MainWindow(QMainWindow):
             found.sort(key=lambda pair: order[pair[0].id])
             return [(row, turns, str(ensure_thumbnail(row.path, row.file_mtime, cache_dir) or "") or None) for row, turns in found]
 
-        progress = QProgressDialog(f"Looking for sideways photos among {len(rows):,}…", "Stop", 0, len(rows), self)
-        progress.setWindowTitle("Auto-Rotate")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        thread = QThread()
-        worker = ScanWorker(job)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._on_auto_progress, Qt.QueuedConnection)
-        worker.done.connect(self._on_auto_done, Qt.QueuedConnection)
-        progress.canceled.connect(worker.cancel_event.set)
-        self._auto_thread, self._auto_worker, self._auto_progress = thread, worker, progress
         self._auto_checked = len(rows)
-        thread.start()
-        progress.show()
+        label = f"Looking for sideways photos among {len(rows):,}…"
+        self._start_background_check("Auto-Rotate", label, job, self._on_sideways_found)
 
     @Slot(int, str)
-    def _on_auto_progress(self, checked: int, _unused: str) -> None:
-        if self._auto_progress is not None:
-            self._auto_progress.setValue(checked)
+    def _on_auto_progress(self, done: int, detail: str) -> None:
+        """detail: "total\tstage" (Find Duplicates' stages vary in length),
+        or empty for Auto-Rotate, which counts through its photos."""
+        progress = self._auto_progress
+        if progress is None:
+            return
+        if detail:
+            total, stage = detail.split("\t", 1)
+            progress.setLabelText(f"{stage}…")
+            progress.setMaximum(int(total))
+        else:
+            progress.setMaximum(self._auto_checked)
+        progress.setValue(done)
 
-    @Slot(object)
-    def _on_auto_done(self, result) -> None:
+    def _on_auto_done(self, result, on_done) -> None:
         thread, progress = self._auto_thread, self._auto_progress
         stopped = self._auto_worker is not None and self._auto_worker.cancel_event.is_set()
         self._auto_thread = self._auto_worker = self._auto_progress = None
         if thread is not None:
+            # done arrives before the thread's quit (queued behind it): ask now.
             thread.quit()
             thread.wait()
             thread.deleteLater()
         if progress is not None:
             progress.close()
             progress.deleteLater()
+        on_done(result, stopped)
+
+    def _on_sideways_found(self, result, stopped: bool) -> None:
         if isinstance(result, Exception):
             log_event(f"auto-rotate failed: {result!r}")
             QMessageBox.warning(self, "Auto-Rotate", f"Auto-Rotate stopped: {result}")

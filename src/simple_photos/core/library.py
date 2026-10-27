@@ -64,6 +64,17 @@ CREATE TABLE IF NOT EXISTS photo_tags (
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (photo_id, tag_id)
 );
+-- Fingerprints for Find Duplicates, valid while the file's size and
+-- modified time match. digest: the file's BLAKE2 hash (only made for
+-- photos that share a size with another); dhashes: the look-alike
+-- hashes of the photo as it is and turned 90°, 180° and 270°, in hex.
+CREATE TABLE IF NOT EXISTS fingerprints (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    file_size INTEGER NOT NULL,
+    file_mtime REAL NOT NULL,
+    digest TEXT,
+    dhashes TEXT
+);
 """
 
 SCAN_BATCH = 200  # photos read between commits (and progress reports)
@@ -253,6 +264,8 @@ class Library:
         if exists:
             assignments = ", ".join(f"{name} = :{name}" for name in values if name != "path")
             self._db.execute(f"UPDATE photos SET {assignments} WHERE path = :path", values)
+            # The file changed (a rotation can even keep its size and date).
+            self._db.execute("DELETE FROM fingerprints WHERE photo_id = (SELECT id FROM photos WHERE path = ?)", (path,))
             result.updated += 1
         else:
             values["date_added"] = time.time()
@@ -417,6 +430,71 @@ class Library:
 
     def all_tag_names(self) -> list[str]:
         return [row[0] for row in self._db.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE")]
+
+    # --- duplicates -----------------------------------------------------
+
+    def duplicate_candidates(self, photo_ids: Optional[Iterable[int]] = None) -> list["Candidate"]:
+        """Every photo (or just these), with what Find Duplicates needs."""
+        from simple_photos.core.duplicates import Candidate
+
+        sql = (
+            "SELECT id, path, width, height, file_size, rating, date_added, "
+            "(SELECT COUNT(*) FROM photo_tags WHERE photo_id = photos.id), file_mtime FROM photos"
+        )
+        rows = self._db.execute(sql).fetchall()
+        if photo_ids is not None:
+            wanted = set(photo_ids)
+            rows = [row for row in rows if row[0] in wanted]
+        return [
+            Candidate(id=r[0], path=r[1], width=r[2], height=r[3], file_size=r[4], rating=r[5], date_added=r[6], tag_count=r[7],
+                      file_mtime=r[8])
+            for r in rows
+        ]
+
+    def fingerprints(self) -> dict[int, tuple[Optional[str], Optional[int]]]:
+        """photo id → (digest, dhashes), only where still valid for the file."""
+        rows = self._db.execute(
+            "SELECT f.photo_id, f.digest, f.dhashes FROM fingerprints f JOIN photos p ON p.id = f.photo_id "
+            "WHERE f.file_size = p.file_size AND f.file_mtime = p.file_mtime"
+        )
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def save_fingerprints(self, entries: Iterable[tuple[int, Optional[str], Optional[str]]]) -> None:
+        """(photo id, digest, dhashes) — either may be None to keep what's known."""
+        for photo_id, digest, hash_value in entries:
+            self._db.execute(
+                "INSERT INTO fingerprints (photo_id, file_size, file_mtime, digest, dhashes) "
+                "SELECT id, file_size, file_mtime, ?, ? FROM photos WHERE id = ? "
+                "ON CONFLICT(photo_id) DO UPDATE SET "
+                "digest = COALESCE(excluded.digest, CASE WHEN fingerprints.file_size = excluded.file_size "
+                "  AND fingerprints.file_mtime = excluded.file_mtime THEN fingerprints.digest END), "
+                "dhashes = COALESCE(excluded.dhashes, CASE WHEN fingerprints.file_size = excluded.file_size "
+                "  AND fingerprints.file_mtime = excluded.file_mtime THEN fingerprints.dhashes END), "
+                "file_size = excluded.file_size, file_mtime = excluded.file_mtime",
+                (digest, hash_value, photo_id),
+            )
+        self._db.commit()
+
+    def merge_into(self, keep_id: int, other_ids: Iterable[int]) -> None:
+        """Before removing duplicates: the copy kept takes the best rating,
+        every tag, and a caption if it has none."""
+        marks, ids = self._in(other_ids)
+        if not ids:
+            return
+        self._db.execute(
+            f"UPDATE photos SET rating = MAX(rating, (SELECT MAX(rating) FROM photos WHERE id IN ({marks}))) WHERE id = ?",
+            [*ids, keep_id],
+        )
+        self._db.execute(
+            f"INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) SELECT ?, tag_id FROM photo_tags WHERE photo_id IN ({marks})",
+            [keep_id, *ids],
+        )
+        self._db.execute(
+            f"UPDATE photos SET caption = (SELECT caption FROM photos WHERE id IN ({marks}) AND caption != '' LIMIT 1) "
+            f"WHERE id = ? AND caption = '' AND EXISTS (SELECT 1 FROM photos WHERE id IN ({marks}) AND caption != '')",
+            [*ids, keep_id, *ids],
+        )
+        self._db.commit()
 
     # --- files ----------------------------------------------------------
 

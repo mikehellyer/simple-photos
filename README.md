@@ -99,6 +99,30 @@ the way it will look after rotating, and untick any you don't want before
 anything changes. Photos without people give no clear answer and are left as
 they are, so use Rotate Left / Right for those.
 
+**Finding duplicates.** **Photo ▸ Find Duplicates…** looks through the whole
+collection, or just the photos shown, at one of three strictness levels:
+
+- **Exact copies only**: the same file saved twice. Only photos that share a
+  file size are read and compared, so this is quick.
+- **The same photo, even resized or re-saved** (the default): also catches
+  smaller copies, re-saved JPEGs, copies sent through messaging apps, and
+  rotated copies.
+- **Very similar photos**: also near-identical shots, like a burst or a slight
+  crop. Check these carefully.
+
+Look-alikes are found by a "fingerprint" of each photo's thumbnail. Copies of
+one picture give the same or nearly the same fingerprint; different pictures
+are far apart. Near-blank photos (all black, all sky) are only ever matched as
+exact copies.
+
+The results show each group side by side, with the folder, size and rating of
+each copy. The best copy of each group is kept (highest resolution, then
+largest file, then the one you've rated or tagged) and the rest are ticked to
+go to the Trash. Change any tick you like, but each group must keep at least
+one photo. Ratings, tags and captions from the copies you remove are added to
+the one you keep. Fingerprints are remembered, so later searches only look at
+new or changed photos.
+
 **Moving photos.** Select one or more photos and choose **Photo ▸ Move to
 Folder…** (Ctrl+Shift+M, also on the right-click menu and in the viewer).
 Then pick the destination, or make a new one there with **New Folder…**. You
@@ -165,6 +189,7 @@ pytest
   - `rotation.py`: lossless rotation (the JPEG orientation tag, or re-saving
     lossless formats)
   - `autorotate.py`: spotting sideways photos by their faces (OpenCV)
+  - `duplicates.py`: exact-copy and look-alike fingerprints, and grouping
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,
   info panel and viewer.
