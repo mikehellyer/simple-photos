@@ -3,7 +3,9 @@
 Everything found is copied into one new folder named with the day of
 the import. Nothing on the device is changed. Photos the library already
 has — the same file size and the same date taken — can be skipped, so
-putting the same card in again doesn't make copies.
+putting the same card in again doesn't make copies; optionally each of
+those is first compared byte for byte with the library's copy, and only
+skipped if they really are identical.
 
 Each file is copied to a .part file first and renamed once complete, so
 a stopped import never leaves half a photo behind; the copy keeps the
@@ -92,6 +94,38 @@ def find_photos(
             if progress:
                 progress(len(photos))
     return DeviceScan(photos)
+
+
+def not_really_imported(
+    photos: list[SourcePhoto],
+    matches: dict[tuple[int, str], list[str]],
+    progress: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> list[SourcePhoto]:
+    """The byte-for-byte check: of the photos that look already imported
+    (same size and date taken as one in the library), those that aren't
+    actually identical to any of the library's matching files — so they
+    should be imported after all. matches: (size, taken) → library paths.
+    A library file that can't be read doesn't count as a match."""
+    import filecmp
+
+    different = []
+    for done, photo in enumerate(photos, start=1):
+        if should_stop and should_stop():
+            break
+        identical = False
+        for library_path in matches.get((photo.size, photo.taken), []):
+            try:
+                if filecmp.cmp(photo.path, library_path, shallow=False):
+                    identical = True
+                    break
+            except OSError:
+                continue
+        if not identical:
+            different.append(photo)
+        if progress:
+            progress(done, len(photos))
+    return different
 
 
 def safe_folder_name(name: str) -> str:

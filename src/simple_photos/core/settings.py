@@ -29,6 +29,8 @@ class Settings:
     sort_descending: bool = False
     show_info_panel: bool = True
     scan_on_startup: bool = True
+    import_folder: str = ""  # where imports go by default; "" = the first collection folder
+    import_verify: bool = False  # byte-for-byte check before skipping photos already imported
 
 
 class SettingsStore:

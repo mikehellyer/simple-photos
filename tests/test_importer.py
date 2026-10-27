@@ -90,3 +90,38 @@ def test_folder_names():
     assert safe_folder_name("  ...  ") == "Import"
     with pytest.raises(ValueError):
         import_photos([], "/tmp", "bad/name")
+
+
+def test_byte_for_byte_check_only_skips_true_copies(card, tmp_path):
+    from simple_photos.core.importer import not_really_imported
+
+    pictures = tmp_path / "Pictures"
+    scan = find_photos(str(card))
+    import_photos(scan.photos[:2], str(pictures), "earlier")
+    library = Library(tmp_path / "lib.db")
+    library.scan([pictures])
+    # Make the second library copy differ but keep its size and date:
+    # same size + date taken, yet a different photo.
+    imported = sorted((pictures / "earlier").iterdir())
+    data = bytearray(imported[1].read_bytes())
+    data[-3] ^= 0xFF
+    stat = os.stat(imported[1])
+    imported[1].write_bytes(bytes(data))
+    os.utime(imported[1], ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    library.scan([pictures])
+
+    again = find_photos(str(card), known=library.import_signatures())
+    looks_imported = [p for p in again.photos if p.already_imported]
+    assert len(looks_imported) == 2
+    different = not_really_imported(looks_imported, library.import_matches())
+    assert [os.path.basename(p.path) for p in different] == ["IMG_0002.JPG"]
+
+
+def test_settings_remember_import_choices(tmp_path):
+    from simple_photos.core.settings import SettingsStore
+
+    store = SettingsStore(tmp_path / "settings.json")
+    assert store.settings.import_folder == "" and store.settings.import_verify is False
+    store.update(import_folder="/p/Imports", import_verify=True)
+    again = SettingsStore(tmp_path / "settings.json").settings
+    assert again.import_folder == "/p/Imports" and again.import_verify is True

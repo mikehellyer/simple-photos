@@ -436,6 +436,14 @@ class Library:
         photo it has seen before."""
         return {(row[0], row[1]) for row in self._db.execute("SELECT file_size, taken FROM photos")}
 
+    def import_matches(self) -> dict[tuple[int, str], list[str]]:
+        """(file size, date taken) → paths of the library's photos with
+        them, for Import's byte-for-byte check."""
+        matches: dict[tuple[int, str], list[str]] = {}
+        for size, taken, path in self._db.execute("SELECT file_size, taken, path FROM photos"):
+            matches.setdefault((size, taken), []).append(path)
+        return matches
+
     # --- duplicates -----------------------------------------------------
 
     def duplicate_candidates(self, photo_ids: Optional[Iterable[int]] = None) -> list["Candidate"]:

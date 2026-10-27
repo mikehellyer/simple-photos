@@ -28,12 +28,19 @@ Simple-Photos looks through it for photos, skipping system folders like
 `$RECYCLE.BIN` and `.Trashes`, and shows how many there are, their size and
 the dates they were taken. The photos are copied into one new folder named
 with today's date and the device, such as **`2026-10-27 KINGSTON`**. You can
-change the name and choose which collection folder it goes in.
+change the name and choose where it goes. To have imports always go to the
+same place, such as `~/Pictures/Imports`, set it in **Settings ▸ Importing**.
+It must be inside one of your collection folders, and it's made again if it
+has been deleted. Left empty, imports go into your first collection folder.
 
 - **Skip photos already in your library** is on by default, so putting the
   same card in again doesn't make copies. A photo counts as already
   imported if one with the same file size and date taken is already in the
   library.
+- Tick **Double-check them byte for byte** (off unless you change it in
+  Settings) to compare each of those with the library's copy first. Only
+  true copies are then skipped, and anything that differs is imported.
+  This is slower, because the files are read in full.
 - The copies keep the originals' dates. Files are never overwritten (a
   clash gets "(2)"), and a stopped import never leaves half a file.
 - Nothing on the device is changed or deleted.

@@ -135,7 +135,7 @@ def _nice_date(iso: str) -> str:
 class ImportDialog(QDialog):
     """What was found on the device, and where it's going."""
 
-    def __init__(self, scan: DeviceScan, source_name: str, parents: list[str], parent=None):
+    def __init__(self, scan: DeviceScan, source_name: str, parents: list[str], verify: bool = False, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Import from {source_name}")
         self.setMinimumWidth(560)
@@ -160,6 +160,16 @@ class ImportDialog(QDialog):
         self._skip.setVisible(already > 0)
         self._skip.toggled.connect(self._update)
         layout.addWidget(self._skip)
+        self._verify = QCheckBox("Double-check them byte for byte first (slower)")
+        self._verify.setToolTip(
+            "They look already imported because a photo with the same file size and date taken is in the "
+            "library. Tick this to compare the files too, and import any that turn out to be different."
+        )
+        self._verify.setChecked(verify)
+        self._verify.setVisible(already > 0)
+        self._verify.setStyleSheet("margin-left: 22px;")
+        self._verify.toggled.connect(self._update)
+        layout.addWidget(self._verify)
 
         form = QFormLayout()
         self._name = QLineEdit(default_folder_name(source_name))
@@ -190,7 +200,17 @@ class ImportDialog(QDialog):
 
     def photos(self):
         # (Not isVisible(): once the dialog closes, nothing in it is visible.)
-        return self._scan.new_photos if self._some_already and self._skip.isChecked() else self._scan.photos
+        return self._scan.new_photos if self._skipping() else self._scan.photos
+
+    def _skipping(self) -> bool:
+        return self._some_already and self._skip.isChecked()
+
+    def photos_to_check(self):
+        """The photos that look already imported, if they're to be checked
+        byte for byte before being skipped."""
+        if self._skipping() and self._verify.isChecked():
+            return [p for p in self._scan.photos if p.already_imported]
+        return []
 
     def parent_folder(self) -> str:
         return self._parent.currentData()
@@ -201,15 +221,20 @@ class ImportDialog(QDialog):
     def _update(self) -> None:
         ok = self._buttons.button(QDialogButtonBox.Ok)
         count = len(self.photos())
+        checking = len(self.photos_to_check())
+        self._verify.setEnabled(self._skip.isChecked())
         name = self.folder_name()
         problem = folder_name_problem(name) if name else "Type a name for the new folder."
         if problem:
             self._where.setText(f"<span style='color:#c0392b'>{problem}</span>")
-        elif count == 0:
+        elif count == 0 and not checking:
             self._where.setText("They're all in your library already.")
         else:
             parent = self.parent_folder() or ""
             actual = free_name(parent, name) if parent and os.path.isdir(parent) else name
             self._where.setText(f"They'll be copied to {short_path(os.path.join(parent, actual))}")
-        ok.setText(f"Import {count:,} Photo{'s' if count != 1 else ''}")
-        ok.setEnabled(count > 0 and not problem and bool(self.parent_folder()))
+        if checking:
+            ok.setText(f"Check {checking:,} and Import")
+        else:
+            ok.setText(f"Import {count:,} Photo{'s' if count != 1 else ''}")
+        ok.setEnabled((count > 0 or checking > 0) and not problem and bool(self.parent_folder()))

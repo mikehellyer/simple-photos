@@ -43,7 +43,7 @@ from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDi
 from simple_photos.gui.import_widgets import DevicesPanel, DeviceWatcher, ImportDialog
 from simple_photos.gui.info_panel import InfoPanel
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
-from simple_photos.gui.settings_dialog import SettingsDialog, normalise
+from simple_photos.gui.settings_dialog import SettingsDialog, is_inside, normalise
 from simple_photos.gui.sidebar import Sidebar
 from simple_photos.gui.update_banner import UpdateBanner
 from simple_photos.gui.viewer import ViewerPage
@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self._auto_worker: ScanWorker | None = None
         self._auto_progress: QProgressDialog | None = None
         self._auto_on_done = None
+        self._after_scan_message = ""
         self._auto_checked = 0
 
         central = QWidget()
@@ -996,10 +997,22 @@ class MainWindow(QMainWindow):
             self._import_from(folder, os.path.basename(os.path.normpath(folder)) or folder)
 
     def _import_parents(self) -> list[str]:
-        """Where an import's new folder can go: each collection folder
-        (the first is the default), then the folder picked in the sidebar."""
+        """Where an import's new folder can go: the import folder from
+        Settings (made again if it's gone), each collection folder, then
+        the folder picked in the sidebar. The first is the default."""
         options = []
-        for root in self._settings.settings.collection_folders:
+        chosen = self._settings.settings.import_folder
+        roots = self._settings.settings.collection_folders
+        if chosen and is_inside(chosen, roots):
+            if not os.path.isdir(chosen):
+                try:
+                    os.makedirs(chosen)
+                    self._library.add_folder(chosen)
+                except OSError:
+                    pass
+            if os.path.isdir(chosen):
+                options.append(normalise(chosen))
+        for root in roots:
             root = normalise(root)
             if os.path.isdir(root) and root not in options:
                 options.append(root)
@@ -1037,25 +1050,51 @@ class MainWindow(QMainWindow):
         if not scan.photos:
             QMessageBox.information(self, "Import", f"No photos found on {name}.")
             return
-        dialog = ImportDialog(scan, name, self._import_parents(), self)
+        dialog = ImportDialog(scan, name, self._import_parents(), verify=self._settings.settings.import_verify, parent=self)
         if not dialog.exec():
             return
         photos, parent, folder_name = dialog.photos(), dialog.parent_folder(), dialog.folder_name()
+        to_check = dialog.photos_to_check()
+        matches = self._library.import_matches() if to_check else {}
+        skipped_before = len(scan.photos) - len(photos)
 
         def job(worker: ScanWorker, cancel):
-            return importer.import_photos(
-                photos,
+            wanted = list(photos)
+            if to_check:
+                different = importer.not_really_imported(
+                    to_check,
+                    matches,
+                    progress=lambda done, total: worker.progress.emit(done, f"{total}\tDouble-checking {done:,} of {total:,}…"),
+                    should_stop=cancel.is_set,
+                )
+                if cancel.is_set():
+                    return None
+                order = {id(p): i for i, p in enumerate(scan.photos)}
+                wanted = sorted(wanted + different, key=lambda p: order[id(p)])
+            skipped = len(scan.photos) - len(wanted) if skipped_before else 0
+            if not wanted:
+                return importer.ImportResult(folder=""), skipped
+            result = importer.import_photos(
+                wanted,
                 parent,
                 folder_name,
                 progress=lambda done, total: worker.progress.emit(done, f"{total}\tImporting {done:,} of {total:,}…"),
                 should_stop=cancel.is_set,
             )
+            return result, skipped
 
-        self._start_background_check("Import", f"Importing {len(photos):,} photos…", job, self._on_imported)
+        label = f"Double-checking {len(to_check):,} photos…" if to_check else f"Importing {len(photos):,} photos…"
+        self._start_background_check("Import", label, job, self._on_imported)
 
-    def _on_imported(self, result, stopped: bool) -> None:
-        if isinstance(result, Exception):
-            QMessageBox.warning(self, "Import", f"The import didn't work: {result}")
+    def _on_imported(self, outcome, stopped: bool) -> None:
+        if isinstance(outcome, Exception):
+            QMessageBox.warning(self, "Import", f"The import didn't work: {outcome}")
+            return
+        if outcome is None:  # stopped while double-checking: nothing copied
+            return
+        result, skipped = outcome
+        if not result.folder:
+            QMessageBox.information(self, "Import", f"All {skipped:,} photos are already in your library — nothing to import.")
             return
         self._library.add_folder(result.folder)
         self._refresh_sidebar()
@@ -1069,9 +1108,10 @@ class MainWindow(QMainWindow):
                 f"Imported {copied:,} into {where}, but {len(result.failed):,} couldn't be copied.\n\n{os.path.basename(path)}: {reason}",
             )
         elif result.stopped:
-            self._status.showMessage(f"Import stopped — {copied:,} photo{'s' if copied != 1 else ''} copied into {where}", 10000)
+            self._after_scan_message = f"Import stopped — {copied:,} photo{'s' if copied != 1 else ''} copied into {where}"
         else:
-            self._status.showMessage(f"Imported {copied:,} photo{'s' if copied != 1 else ''} into {where}", 10000)
+            also = f" ({skipped:,} already in the library skipped)" if skipped else ""
+            self._after_scan_message = f"Imported {copied:,} photo{'s' if copied != 1 else ''} into {where}{also}"
         self.rescan()
 
     def _add_folder(self) -> None:
@@ -1150,6 +1190,10 @@ class MainWindow(QMainWindow):
         if isinstance(result, Exception):
             log_event(f"scan failed: {result!r}")
             self._status.showMessage(f"Couldn't finish looking for photos: {result}", 10000)
+        elif self._after_scan_message:
+            # Said instead of "Collection up to date" — it's what the scan was for.
+            self._status.showMessage(self._after_scan_message, 10000)
+            self._after_scan_message = ""
         elif not stopped:
             parts = [f"{n:,} {label}" for n, label in ((result.added, "new"), (result.updated, "changed"), (result.removed, "removed")) if n]
             self._status.showMessage("Collection up to date" + (f": {', '.join(parts)}" if parts else ""), 8000)
