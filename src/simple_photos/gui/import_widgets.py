@@ -78,6 +78,7 @@ class DevicesPanel(QWidget):
     there are none."""
 
     import_requested = Signal(object)  # Device
+    backup_requested = Signal(object)  # Device
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,9 +91,16 @@ class DevicesPanel(QWidget):
         self._list.itemDoubleClicked.connect(lambda item: self.import_requested.emit(item.data(Qt.UserRole)))
         self._list.itemSelectionChanged.connect(self._update_button)
         layout.addWidget(self._list)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(4)
         self._button = QPushButton("Import Photos…")
         self._button.clicked.connect(self._import_selected)
-        layout.addWidget(self._button)
+        buttons.addWidget(self._button, 1)
+        self._backup_button = QPushButton("Back Up…")
+        self._backup_button.setToolTip("Back up your collection folders to this drive")
+        self._backup_button.clicked.connect(self._backup_selected)
+        buttons.addWidget(self._backup_button)
+        layout.addLayout(buttons)
         self.set_devices([])
 
     def set_devices(self, devices: list[Device]) -> None:
@@ -117,7 +125,15 @@ class DevicesPanel(QWidget):
         return items[0].data(Qt.UserRole) if items else None
 
     def _update_button(self) -> None:
-        self._button.setEnabled(self._selected() is not None)
+        device = self._selected()
+        self._button.setEnabled(device is not None)
+        # Only drives: a camera or phone isn't somewhere to keep a backup.
+        self._backup_button.setEnabled(device is not None and device.kind == "drive")
+
+    def _backup_selected(self) -> None:
+        device = self._selected()
+        if device is not None and device.kind == "drive":
+            self.backup_requested.emit(device)
 
     def _import_selected(self) -> None:
         device = self._selected()

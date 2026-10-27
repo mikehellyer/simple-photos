@@ -33,6 +33,7 @@ class Settings:
     import_verify: bool = False  # byte-for-byte check before skipping photos already imported
     import_period_unit: str = "all"  # import only photos taken in the last … "days" / "weeks" / "months"
     import_period_count: int = 7
+    last_backups: dict[str, str] = field(default_factory=dict)  # backup drive's name → when (ISO), to show next time
 
 
 class SettingsStore:
@@ -63,6 +64,9 @@ class SettingsStore:
             if f.name == "collection_folders":
                 if isinstance(value, list):
                     self.settings.collection_folders = [v for v in value if isinstance(v, str) and v.strip()]
+            elif f.name == "last_backups":
+                if isinstance(value, dict):
+                    self.settings.last_backups = {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
             elif type(value) is type(default):
                 setattr(self.settings, f.name, value)
         self.settings.thumb_size = max(THUMB_MIN, min(THUMB_MAX, self.settings.thumb_size))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import sys
 import time
@@ -38,13 +39,15 @@ from simple_photos.core.fileops import (
     reveal_in_file_manager,
 )
 from simple_photos.core.library import Library, PhotoFilter, ScanResult
+from simple_photos.core.metadata import format_size
 from simple_photos.core.self_update import download_asset, find_asset_for_this_platform, launch_installer
 from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
 from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
 from simple_photos.core.thumbnails import copy_thumbnail, ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
-from simple_photos.core import duplicates, importer, raw
+from simple_photos.core import backup, duplicates, importer, raw
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
+from simple_photos.gui.backup_dialog import BackupDialog
 from simple_photos.gui.duplicates_dialog import DuplicatesDialog, FindDuplicatesDialog
 from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
 from simple_photos.gui.import_widgets import DevicesPanel, DeviceWatcher, ImportDialog
@@ -114,6 +117,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._sidebar, 1)
         self._devices_panel = DevicesPanel()
         self._devices_panel.import_requested.connect(lambda device: self._import_from(device.path, device.name))
+        self._devices_panel.backup_requested.connect(lambda device: self._backup_to(device.path, device.name))
         left_layout.addWidget(self._devices_panel)
         self._splitter.addWidget(left)
         self._devices = DeviceWatcher(self)
@@ -273,6 +277,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         self._import_menu = file_menu.addMenu("Import From")
         self._import_menu.aboutToShow.connect(self._fill_import_menu)
+        self._backup_menu = file_menu.addMenu("Back Up To")
+        self._backup_menu.aboutToShow.connect(self._fill_backup_menu)
         file_menu.addSeparator()
         action(file_menu, "New Folder…", "Ctrl+Shift+N", lambda: self._new_folder(None))
         action(file_menu, "Rename Folder…", "F2", lambda: self._rename_folder(None))
@@ -1341,6 +1347,106 @@ class MainWindow(QMainWindow):
             )
         else:
             self._status.showMessage(f"Deleted {deleted:,} photo{'s' if deleted != 1 else ''} from {source_name}", 10000)
+
+    # --- backing up -----------------------------------------------------
+
+    def _fill_backup_menu(self) -> None:
+        self._devices.check()
+        menu = self._backup_menu
+        menu.clear()
+        drives = [d for d in self._devices.devices if d.kind == "drive"]
+        for device in drives:
+            menu.addAction(device.description, lambda device=device: self._backup_to(device.path, device.name))
+        if not drives:
+            none = menu.addAction("No USB drives plugged in")
+            none.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Other Folder…", self._backup_to_folder)
+
+    def _backup_to_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Back Up To")
+        if folder:
+            self._backup_to(folder, os.path.basename(os.path.normpath(folder)) or folder)
+
+    def _backup_to(self, destination: str, name: str) -> None:
+        if self._auto_thread is not None or self._busy_with_files():
+            return
+        roots = [normalise(r) for r in self._settings.settings.collection_folders if os.path.isdir(normalise(r))]
+        if not roots:
+            QMessageBox.information(self, "Back Up", "There are no collection folders to back up yet.")
+            return
+
+        def job(worker: ScanWorker, cancel):
+            return backup.plan_backup(
+                roots,
+                destination,
+                progress=lambda found: worker.progress.emit(found, f"0\tComparing with {name}… {found:,} to copy so far"),
+                should_stop=cancel.is_set,
+            )
+
+        self._start_background_check(
+            "Back Up", f"Comparing with {name}…", job, lambda plans, stopped: self._on_backup_planned(plans, stopped, destination, name)
+        )
+
+    def _on_backup_planned(self, plans, stopped: bool, destination: str, name: str) -> None:
+        if isinstance(plans, Exception):
+            QMessageBox.warning(self, "Back Up", f"Couldn't compare with {name}: {plans}")
+            return
+        if stopped:
+            return
+        dialog = BackupDialog(plans, name, backup.free_space(destination), self._settings.settings.last_backups.get(name), self)
+        if not dialog.exec():
+            return
+        files, save_library = dialog.files(), dialog.save_library()
+        db_path = self._library.db_path
+        total_mb = max(1, sum(f.size for f in files) // 1_000_000)
+
+        def job(worker: ScanWorker, cancel):
+            result = backup.run_backup(
+                files,
+                # In megabytes: a progress bar can't count billions of bytes.
+                progress=lambda done, total: worker.progress.emit(
+                    done // 1_000_000, f"{total_mb}\tBacking up… {format_size(done)} of {format_size(total)}"
+                ),
+                should_stop=cancel.is_set,
+            )
+            if save_library and not result.stopped:
+                result.library_saved = backup.save_library(db_path, destination)
+            return result
+
+        self._start_background_check(
+            "Back Up", f"Backing up to {name}…", job, lambda result, stopped: self._on_backed_up(result, name, len(files), save_library)
+        )
+
+    def _on_backed_up(self, result, name: str, planned: int, save_library: bool) -> None:
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Back Up", f"The backup didn't finish: {result}")
+            return
+        size = format_size(result.bytes_copied)
+        if result.stopped:
+            self._status.showMessage(f"Backup stopped — {result.copied:,} of {planned:,} files copied to {name} ({size})", 10000)
+            return
+        if result.failed:
+            examples = "\n".join(f"{os.path.basename(path)}: {why}" for path, why in result.failed[:5])
+            QMessageBox.warning(
+                self,
+                "Back Up",
+                f"Backed up {result.copied:,} files to {name} ({size}), but {len(result.failed):,} couldn't be copied:\n\n{examples}"
+                + ("\n…" if len(result.failed) > 5 else ""),
+            )
+        else:
+            self._settings.settings.last_backups = {
+                **self._settings.settings.last_backups, name: _dt.datetime.now().isoformat(timespec="minutes")
+            }
+            self._settings.save()
+            if result.copied:
+                library = " and your ratings, tags and captions" if result.library_saved else ""
+                message = f"Backed up {result.copied:,} new or changed file{'s' if result.copied != 1 else ''} ({size}){library} to {name}"
+            else:
+                message = f"{name} was already up to date" + (" — saved your ratings, tags and captions" if result.library_saved else "")
+            self._status.showMessage(message, 10000)
+        if save_library and not result.library_saved:
+            QMessageBox.warning(self, "Back Up", f"The photos were backed up, but the copy of your ratings and tags couldn't be saved on {name}.")
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add a Folder to the Collection")

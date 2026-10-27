@@ -71,6 +71,29 @@ A camera that connects as a drive (or its card in a card reader) works
 everywhere. RAW files aren't imported yet, only the formats Simple-Photos
 shows.
 
+**Backing up to a USB drive.** Plug in a USB stick or drive and click
+**Back Up…** in the Devices list, or use **File ▸ Back Up To ▸** for any
+connected drive, or **Other Folder…** (an external drive mounted elsewhere, a
+network folder).
+
+- Everything in your collection folders is copied: photos, and anything else
+  you keep with them, like videos (hidden system files are skipped). It all
+  goes into one folder on the drive, **`Simple-Photos Backup`**, mirroring
+  your folders, e.g. `Simple-Photos Backup/Pictures/2024/Rome/…`.
+- **Only new or changed files are copied**, so after the first backup, later
+  ones are quick. The window shows what will be copied, how much room it needs
+  and has, and when you last backed up to that drive. Untick collection
+  folders to leave them out. If the drive is too full, it says so before
+  copying anything.
+- **Your ratings, tags and captions** are saved alongside as
+  `Simple-Photos library.db`. They live in Simple-Photos' library, not in the
+  photos, so a backup without them would lose them.
+- **Nothing is ever deleted from the backup.** A photo you delete from your
+  computer keeps its backed-up copy.
+- Copies keep their dates, and a stopped backup never leaves half a file. USB
+  drives' time quirks (2-second precision, an hour out after a clock change)
+  don't make files look changed.
+
 **Browsing.** The sidebar has three ways in:
 
 - **Folders**: your folder tree, with photo counts. Tick or untick *Include
@@ -289,6 +312,7 @@ pytest
   - `raw.py`: RAW files via LibRaw: previews, developing, camera details
   - `geo.py`: map maths, pin grouping and OpenStreetMap tiles
   - `devices.py` and `importer.py`: spotting plugged-in devices, and importing from them
+  - `backup.py`: backing up the collection (and library) to a drive
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,
   info panel and viewer.
