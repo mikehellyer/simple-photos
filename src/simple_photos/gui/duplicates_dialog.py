@@ -61,8 +61,11 @@ class FindDuplicatesDialog(QDialog):
         scope_layout = QVBoxLayout(scope)
         self._everything = QRadioButton(f"The whole collection ({total_count:,} photos)")
         self._shown = QRadioButton(f"Just the photos shown now ({shown_count:,})")
-        self._everything.setChecked(True)
-        self._shown.setEnabled(0 < shown_count < total_count)
+        # Just the photos shown is the default — unless they're all of them
+        # (or none), when the two choices are the same thing.
+        narrower = 0 < shown_count < total_count
+        self._shown.setEnabled(narrower)
+        (self._shown if narrower else self._everything).setChecked(True)
         scope_layout.addWidget(self._everything)
         scope_layout.addWidget(self._shown)
         layout.addWidget(scope)

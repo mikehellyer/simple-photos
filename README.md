@@ -137,8 +137,9 @@ the way it will look after rotating, and untick any you don't want before
 anything changes. Photos without people give no clear answer and are left as
 they are, so use Rotate Left / Right for those.
 
-**Finding duplicates.** **Photo ▸ Find Duplicates…** looks through the whole
-collection, or just the photos shown, at one of three strictness levels:
+**Finding duplicates.** **Photo ▸ Find Duplicates…** looks through just the
+photos shown (the default) or the whole collection, at one of three
+strictness levels:
 
 - **Exact copies only**: the same file saved twice. Only photos that share a
   file size are read and compared, so this is quick.
