@@ -71,6 +71,24 @@ tags and camera models), a minimum-rating filter, sorting (date taken, name,
 rating, date added, size) and a thumbnail-size slider. Thumbnails are made in
 the background and cached, so they appear instantly the next time.
 
+**Map.** Click **🗺 Map** above the photos (or **View ▸ Map**, Ctrl+M) to see
+where the photos shown were taken. That means the folder, date or tag picked
+in the sidebar, after any search or rating filter.
+
+- Photos taken near each other share a pin, a thumbnail with a count, which
+  splits apart as you zoom in.
+- Click a pin to see its photos in the grid. **📍 N photos from the map ✕**
+  takes you back. Double-click a pin to open its first photo.
+- Scroll to zoom where the pointer is, drag to move, and use **+**, **−**
+  and **⤢** (show all).
+- **Photo ▸ Show on Map** jumps to where the selected photo was taken.
+
+Only photos with a GPS location appear. Phones nearly always record one;
+many cameras don't. The map says how many of the photos shown have one. The
+map comes from [OpenStreetMap](https://www.openstreetmap.org). Tiles are
+downloaded as needed (two at a time, as OpenStreetMap asks) and kept in the
+cache folder, so places you've looked at work offline too.
+
 **Rating, tagging, captions.** Select one or many photos, then:
 
 - press **0–5** to rate them (or click the stars in the info panel),
@@ -249,6 +267,7 @@ pytest
   - `autorotate.py`: spotting sideways photos by their faces (OpenCV)
   - `duplicates.py`: exact-copy and look-alike fingerprints, and grouping
   - `raw.py`: RAW files via LibRaw: previews, developing, camera details
+  - `geo.py`: map maths, pin grouping and OpenStreetMap tiles
   - `devices.py` and `importer.py`: spotting plugged-in devices, and importing from them
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,

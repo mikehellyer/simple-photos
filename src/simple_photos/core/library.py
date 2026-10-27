@@ -133,6 +133,7 @@ class PhotoFilter:
     text: str = ""
     sort: str = "taken"
     descending: bool = False
+    ids: Optional[frozenset[int]] = None  # just these photos (picked on the map)
 
 
 @dataclass
@@ -334,6 +335,9 @@ class Library:
         if f.min_rating:
             where.append("rating >= ?")
             params.append(f.min_rating)
+        if f.ids is not None:
+            # Safe to inline: they're ints from our own database.
+            where.append(f"id IN ({','.join(str(int(i)) for i in f.ids) or 'NULL'})")
         for word in f.text.split():
             pattern = f"%{word}%"
             where.append(
@@ -347,6 +351,12 @@ class Library:
             sql += " WHERE " + " AND ".join(where)
         sql += f" ORDER BY {order}"
         return [PhotoRow(*row) for row in self._db.execute(sql, params)]
+
+    def locations(self, photo_ids: Iterable[int]) -> dict[int, tuple[float, float]]:
+        """photo id → (latitude, longitude), for those that have one."""
+        wanted = set(photo_ids)
+        rows = self._db.execute("SELECT id, gps_lat, gps_lon FROM photos WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL")
+        return {row[0]: (row[1], row[2]) for row in rows if row[0] in wanted}
 
     def photo(self, photo_id: int) -> Optional[Photo]:
         row = self._db.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()

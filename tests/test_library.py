@@ -245,3 +245,17 @@ def test_forget_folder(library, collection):
     counts = library.folder_counts()
     assert str(collection / "Empty") not in counts and str(collection / "Empty" / "Inner") not in counts
     assert library.count() == 3
+
+
+def test_locations_and_filtering_by_ids(library, tmp_path):
+    make_photo(tmp_path / "p" / "rome.jpg", gps=(41.9, 12.49))
+    make_photo(tmp_path / "p" / "home.jpg")
+    make_photo(tmp_path / "p" / "cornwall.jpg", gps=(50.1, -5.5))
+    library.scan([tmp_path / "p"])
+    ids = {row.filename: row.id for row in library.query(PhotoFilter())}
+    located = library.locations(ids.values())
+    assert set(located) == {ids["rome.jpg"], ids["cornwall.jpg"]}
+    assert located[ids["rome.jpg"]] == pytest.approx((41.9, 12.49), abs=1e-4)
+    picked = library.query(PhotoFilter(ids=frozenset({ids["rome.jpg"], ids["home.jpg"]})))
+    assert sorted(row.filename for row in picked) == ["home.jpg", "rome.jpg"]
+    assert library.query(PhotoFilter(ids=frozenset())) == []

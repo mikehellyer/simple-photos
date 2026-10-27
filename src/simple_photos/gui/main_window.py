@@ -42,6 +42,7 @@ from simple_photos.gui.duplicates_dialog import DuplicatesDialog, FindDuplicates
 from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
 from simple_photos.gui.import_widgets import DevicesPanel, DeviceWatcher, ImportDialog
 from simple_photos.gui.info_panel import InfoPanel
+from simple_photos.gui.map_view import MapView
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
 from simple_photos.gui.settings_dialog import SettingsDialog, is_inside, normalise
 from simple_photos.gui.sidebar import Sidebar
@@ -92,7 +93,7 @@ class MainWindow(QMainWindow):
 
         self._splitter = QSplitter(Qt.Horizontal)
         self._sidebar = Sidebar(self._library)
-        self._sidebar.scope_changed.connect(self._reload_photos)
+        self._sidebar.scope_changed.connect(self._scope_changed)
         self._sidebar.tags_edited.connect(self._tags_changed)
         self._sidebar.photos_dropped.connect(self._photos_dropped)
         self._sidebar.new_folder_requested.connect(self._new_folder)
@@ -173,6 +174,21 @@ class MainWindow(QMainWindow):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(8, 6, 8, 6)
+        self._map_button = QToolButton()
+        self._map_button.setText("🗺 Map")
+        self._map_button.setCheckable(True)
+        self._map_button.setToolTip("Show where these photos were taken (Ctrl+M)")
+        self._map_button.toggled.connect(self._show_map)
+        bar.addWidget(self._map_button)
+        self._map_chip = QToolButton()
+        self._map_chip.setToolTip("Back to the map")
+        self._map_chip.setStyleSheet(
+            "QToolButton { background: rgba(47, 111, 214, 0.15); border: 1px solid rgba(47, 111, 214, 0.5);"
+            " border-radius: 10px; padding: 2px 10px; }"
+        )
+        self._map_chip.clicked.connect(self._back_to_map)
+        self._map_chip.hide()
+        bar.addWidget(self._map_chip)
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search names, captions, tags, cameras…")
         self._search.setClearButtonEnabled(True)
@@ -220,7 +236,15 @@ class MainWindow(QMainWindow):
         self._grid.rate_requested.connect(lambda rating: self._rate_photos(self._selected_ids(), rating))
         self._grid.selectionModel().selectionChanged.connect(lambda *_: self._selection_timer.start())
         self._grid.setContextMenuPolicy(Qt.ActionsContextMenu)
-        layout.addWidget(self._grid, 1)
+        self._map = MapView(self._map_thumbnail)
+        self._map.pin_clicked.connect(self._show_map_photos)
+        self._map.pin_activated.connect(lambda ids: self._show_map_photos(ids, open_first=True))
+        self._model.dataChanged.connect(lambda *_: self._map.isVisible() and self._map.update())
+        self._grid_or_map = QStackedWidget()
+        self._grid_or_map.addWidget(self._grid)
+        self._grid_or_map.addWidget(self._map)
+        layout.addWidget(self._grid_or_map, 1)
+        self._map_ids: frozenset[int] | None = None  # photos picked on the map, shown in the grid
         return page
 
     def _build_menus(self) -> None:
@@ -256,6 +280,7 @@ class MainWindow(QMainWindow):
         view_action = action(photo_menu, "View", None, lambda: self._open_viewer(self._grid.currentIndex().row()))
         open_action = action(photo_menu, "Open in Default App", "Ctrl+Shift+O", self._open_externally)
         reveal_action = action(photo_menu, "Show in File Manager", "Ctrl+Shift+R", self._reveal)
+        action(photo_menu, "Show on Map", None, self._show_on_map)
         move_action = action(photo_menu, "Move to Folder…", "Ctrl+Shift+M", self._move_to_folder)
         photo_menu.addSeparator()
         left_action = action(photo_menu, "Rotate Left", "Ctrl+L", lambda: self._rotate_photos([(row, -1) for row in self._active_rows()]))
@@ -278,6 +303,7 @@ class MainWindow(QMainWindow):
 
         view_menu = self.menuBar().addMenu("&View")
         action(view_menu, "Find", QKeySequence.Find, self._focus_search)
+        action(view_menu, "Map", "Ctrl+M", self._map_button.toggle)
         self._info_action = action(view_menu, "Show Info Panel", "Ctrl+I", self._toggle_info)
         self._info_action.setCheckable(True)
         self._info_action.setChecked(self._settings.settings.show_info_panel)
@@ -298,7 +324,77 @@ class MainWindow(QMainWindow):
             text=self._search.text().strip(),
             sort=self._sort.currentData(),
             descending=self._sort_direction.isChecked(),
+            ids=self._map_ids,
         )
+
+    # --- map ------------------------------------------------------------
+
+    def _map_thumbnail(self, row):
+        """A pin's picture: the grid's cached thumbnail, asking for it to
+        be loaded if it isn't yet (the map repaints when it arrives)."""
+        pixmap = self._model.cached_pixmap(row)
+        if pixmap is None:
+            index = self._model.row_of(row.id)
+            if index is not None:
+                self._model.data(self._model.index(index), Qt.DecorationRole)
+        return pixmap
+
+    def _show_map(self, on: bool) -> None:
+        if self._stack.currentWidget() is not self._grid_page:
+            self._close_viewer()
+        if on and self._map_ids is not None:
+            self._map_ids = None  # the map shows the whole of what's picked in the sidebar
+            self._map_chip.hide()
+        self._grid_or_map.setCurrentWidget(self._map if on else self._grid)
+        self._size_slider.setEnabled(not on)
+        self._reload_photos()
+        if on:
+            self._map.setFocus()
+
+    def _show_map_photos(self, ids: list[int], open_first: bool = False) -> None:
+        """A pin was clicked: show its photos in the grid."""
+        self._map_ids = frozenset(ids)
+        count = len(ids)
+        self._map_chip.setText(f"📍 {count:,} photo{'s' if count != 1 else ''} from the map  ✕")
+        self._map_chip.show()
+        self._map_button.blockSignals(True)
+        self._map_button.setChecked(False)
+        self._map_button.blockSignals(False)
+        self._grid_or_map.setCurrentWidget(self._grid)
+        self._size_slider.setEnabled(True)
+        self._reload_photos()
+        if open_first or count == 1:
+            self._grid.selectionModel().setCurrentIndex(self._model.index(0), QItemSelectionModel.ClearAndSelect)
+            if open_first:
+                self._open_viewer(0)
+
+    def _back_to_map(self) -> None:
+        self._map_ids = None
+        self._map_chip.hide()
+        self._map_button.setChecked(True)
+
+    def _clear_map_pick(self) -> None:
+        if self._map_ids is not None:
+            self._map_ids = None
+            self._map_chip.hide()
+
+    def _scope_changed(self) -> None:
+        self._clear_map_pick()
+        self._reload_photos()
+
+    def _show_on_map(self) -> None:
+        rows = self._active_rows()
+        located = self._library.locations(row.id for row in rows[:1])
+        if not located:
+            self._status.showMessage("This photo has no location", 5000)
+            return
+        lat, lon = next(iter(located.values()))
+        self._clear_map_pick()
+        if not self._map_button.isChecked():
+            self._map_button.setChecked(True)
+        else:
+            self._show_map(True)
+        self._map.show_location(lat, lon)
 
     def _reload_photos(self) -> None:
         selected = self._selected_ids()
@@ -331,6 +427,8 @@ class MainWindow(QMainWindow):
         else:
             self._grid.empty_text = "No photos match."
         self._grid.viewport().update()
+        if self._map_button.isChecked():
+            self._map.set_photos(rows, self._library.locations(row.id for row in rows))
         self._selection_settled()
 
     def _update_count(self) -> int:
@@ -1293,6 +1391,7 @@ class MainWindow(QMainWindow):
             self._auto_thread.quit()
             self._auto_thread.wait()
         self._model.loader.shutdown()
+        self._map.shutdown()
         self._runner.shutdown(BACKGROUND_JOIN_TIMEOUT_MS)
         self._library.close()
         super().closeEvent(event)
