@@ -222,10 +222,17 @@ class ImportDialog(QDialog):
         self._where.setWordWrap(True)
         self._where.setStyleSheet("color: palette(mid);")
         layout.addWidget(self._where)
-        note = QLabel("The photos are copied — nothing on the device is changed or deleted.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
-        layout.addWidget(note)
+        self._delete_after = QCheckBox(f"Delete them from {source_name} after importing")
+        self._delete_after.setToolTip(
+            "Once the import has finished you'll be asked to confirm. Each photo is only deleted after its "
+            "copy has been checked byte for byte; photos that weren't imported this time are left alone."
+        )
+        self._delete_after.toggled.connect(self._update)
+        layout.addWidget(self._delete_after)
+        self._note = QLabel()
+        self._note.setWordWrap(True)
+        self._note.setStyleSheet("color: palette(mid);")
+        layout.addWidget(self._note)
 
         self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self._buttons.accepted.connect(self.accept)
@@ -261,6 +268,9 @@ class ImportDialog(QDialog):
 
     def parent_folder(self) -> str:
         return self._parent.currentData()
+
+    def delete_after(self) -> bool:
+        return self._delete_after.isChecked()
 
     def folder_name(self) -> str:
         return self._name.text().strip()
@@ -304,3 +314,8 @@ class ImportDialog(QDialog):
         else:
             ok.setText(f"Import {count:,} Photo{'s' if count != 1 else ''}")
         ok.setEnabled((count > 0 or checking > 0) and not problem and bool(self.parent_folder()))
+        self._note.setText(
+            "You'll be asked to confirm before anything is deleted, once the photos are safely copied."
+            if self._delete_after.isChecked()
+            else "The photos are copied — nothing on the device is changed or deleted."
+        )

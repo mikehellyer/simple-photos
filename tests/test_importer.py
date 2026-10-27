@@ -163,3 +163,43 @@ def test_import_period_settings(tmp_path):
     path.write_text(json.dumps({"import_period_unit": "fortnights", "import_period_count": 0}))
     s = SettingsStore(path).settings
     assert (s.import_period_unit, s.import_period_count) == ("all", 1)
+
+
+def test_originals_are_deleted_only_when_their_copy_matches(card, tmp_path):
+    from simple_photos.core.importer import delete_originals
+
+    scan = find_photos(str(card))
+    result = import_photos(scan.photos, str(tmp_path / "Pictures"), "Import")
+    assert result.sources == [p.path for p in scan.photos]
+    # Spoil one copy: its original must survive.
+    spoiled = result.copied[1]
+    data = bytearray(open(spoiled, "rb").read())
+    data[-5] ^= 0xFF
+    open(spoiled, "wb").write(bytes(data))
+
+    cleanup = delete_originals(result)
+    assert sorted(cleanup.deleted) == sorted([result.sources[0], result.sources[2]])
+    assert cleanup.kept == [(result.sources[1], "its copy doesn't match it")]
+    assert not os.path.exists(result.sources[0]) and os.path.exists(result.sources[1])
+    assert os.path.isdir(card / "DCIM" / "100CANON")  # the camera's folders stay
+    assert all(os.path.exists(c) for c in result.copied)  # the copies, of course, too
+
+
+def test_a_missing_copy_keeps_its_original(card, tmp_path):
+    from simple_photos.core.importer import delete_originals
+
+    scan = find_photos(str(card))
+    result = import_photos(scan.photos[:1], str(tmp_path / "Pictures"), "Import")
+    os.remove(result.copied[0])
+    cleanup = delete_originals(result)
+    assert cleanup.deleted == [] and os.path.exists(scan.photos[0].path)
+    assert "couldn't be checked" in cleanup.kept[0][1]
+
+
+def test_photos_not_copied_this_time_are_never_deleted(card, tmp_path):
+    from simple_photos.core.importer import delete_originals
+
+    scan = find_photos(str(card))
+    result = import_photos(scan.photos[:1], str(tmp_path / "Pictures"), "Import")  # e.g. the rest were skipped
+    delete_originals(result)
+    assert [os.path.exists(p.path) for p in scan.photos] == [False, True, True]

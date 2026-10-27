@@ -1161,6 +1161,7 @@ class MainWindow(QMainWindow):
             return
         unit, number = dialog.period()
         self._settings.update(import_period_unit=unit, import_period_count=number)  # next time, the same
+        delete_after = dialog.delete_after()
         photos, parent, folder_name = dialog.photos(), dialog.parent_folder(), dialog.folder_name()
         to_check = dialog.photos_to_check()
         matches = self._library.import_matches() if to_check else {}
@@ -1193,9 +1194,11 @@ class MainWindow(QMainWindow):
             return result, skipped
 
         label = f"Double-checking {len(to_check):,} photos…" if to_check else f"Importing {len(photos):,} photos…"
-        self._start_background_check("Import", label, job, self._on_imported)
+        self._start_background_check(
+            "Import", label, job, lambda outcome, stopped: self._on_imported(outcome, stopped, name, delete_after)
+        )
 
-    def _on_imported(self, outcome, stopped: bool) -> None:
+    def _on_imported(self, outcome, stopped: bool, source_name: str = "", delete_after: bool = False) -> None:
         if isinstance(outcome, Exception):
             QMessageBox.warning(self, "Import", f"The import didn't work: {outcome}")
             return
@@ -1222,6 +1225,60 @@ class MainWindow(QMainWindow):
             also = f" ({skipped:,} already in the library skipped)" if skipped else ""
             self._after_scan_message = f"Imported {copied:,} photo{'s' if copied != 1 else ''} into {where}{also}"
         self.rescan()
+        if delete_after and result.copied and not result.stopped:
+            self._offer_to_delete_originals(result, source_name, skipped)
+
+    def _offer_to_delete_originals(self, result, source_name: str, skipped: int) -> None:
+        count = len(result.copied)
+        photos = f"{count:,} imported photo{'s' if count != 1 else ''}"
+        left = []
+        if result.failed:
+            left.append(f"{len(result.failed):,} that couldn't be copied")
+        if skipped:
+            left.append(f"{skipped:,} that {'was' if skipped == 1 else 'were'} already in your library")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(f"Delete from {source_name}?")
+        box.setText(f"Delete the {photos} from {source_name}?")
+        box.setInformativeText(
+            f"They've been copied to {short_path(result.folder)}. Each one is compared with its copy first, and "
+            "only deleted if they match exactly.\n\n"
+            + (f"Left on {source_name}: {' and '.join(left)}.\n\n" if left else "")
+            + f"This can't be undone — files deleted from {source_name} don't go to a Trash."
+        )
+        delete = box.addButton(f"Delete {count:,} from {source_name}", QMessageBox.DestructiveRole)
+        keep = box.addButton("Keep Them", QMessageBox.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        if box.clickedButton() is not delete:
+            return
+
+        def job(worker: ScanWorker, cancel):
+            return importer.delete_originals(
+                result,
+                progress=lambda done, total: worker.progress.emit(done, f"{total}\tChecking and deleting {done:,} of {total:,}…"),
+                should_stop=cancel.is_set,
+            )
+
+        self._start_background_check(
+            f"Delete from {source_name}", f"Checking and deleting {count:,} photos…", job,
+            lambda cleanup, stopped: self._on_originals_deleted(cleanup, source_name),
+        )
+
+    def _on_originals_deleted(self, cleanup, source_name: str) -> None:
+        if isinstance(cleanup, Exception):
+            QMessageBox.warning(self, "Delete", f"Couldn't delete the photos from {source_name}: {cleanup}")
+            return
+        deleted = len(cleanup.deleted)
+        if cleanup.kept:
+            path, why = cleanup.kept[0]
+            QMessageBox.warning(
+                self, f"Delete from {source_name}",
+                f"Deleted {deleted:,} from {source_name}. {len(cleanup.kept):,} were kept there:\n\n"
+                f"{os.path.basename(path)}: {why}",
+            )
+        else:
+            self._status.showMessage(f"Deleted {deleted:,} photo{'s' if deleted != 1 else ''} from {source_name}", 10000)
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add a Folder to the Collection")

@@ -59,6 +59,13 @@ class ImportResult:
     copied: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)  # (source path, reason)
     stopped: bool = False
+    sources: list[str] = field(default_factory=list)  # the original of each copied[i]
+
+
+@dataclass
+class CleanUpResult:
+    deleted: list[str] = field(default_factory=list)
+    kept: list[tuple[str, str]] = field(default_factory=list)  # (source path, why it was kept)
 
 
 def find_photos(
@@ -209,6 +216,44 @@ def import_photos(
                 pass
         else:
             result.copied.append(target)
+            result.sources.append(photo.path)
         if progress:
             progress(done, len(photos))
     return result
+
+
+def delete_originals(
+    result: ImportResult,
+    progress: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> CleanUpResult:
+    """After an import: delete each original from the device — but only
+    once its copy has been compared with it byte for byte and matches.
+    Anything else stays where it is. Folders are left alone (cameras
+    expect their DCIM folders). Deleting is permanent: removable drives
+    don't have a real Trash."""
+    import filecmp
+
+    cleanup = CleanUpResult()
+    pairs = list(zip(result.sources, result.copied))
+    for done, (source, copy) in enumerate(pairs, start=1):
+        if should_stop and should_stop():
+            cleanup.kept.extend((s, "stopped before it was checked") for s, _ in pairs[done - 1 :])
+            break
+        try:
+            identical = filecmp.cmp(source, copy, shallow=False)
+        except OSError as error:
+            cleanup.kept.append((source, f"couldn't be checked: {error.strerror or error}"))
+        else:
+            if not identical:
+                cleanup.kept.append((source, "its copy doesn't match it"))
+            else:
+                try:
+                    os.remove(source)
+                except OSError as error:
+                    cleanup.kept.append((source, error.strerror or str(error)))
+                else:
+                    cleanup.deleted.append(source)
+        if progress:
+            progress(done, len(pairs))
+    return cleanup

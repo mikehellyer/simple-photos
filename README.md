@@ -48,7 +48,16 @@ has been deleted. Left empty, imports go into your first collection folder.
   This is slower, because the files are read in full.
 - The copies keep the originals' dates. Files are never overwritten (a
   clash gets "(2)"), and a stopped import never leaves half a file.
-- Nothing on the device is changed or deleted.
+- Nothing on the device is changed or deleted, unless you tick **Delete them
+  from … after importing**. That box is off every time. Once the import has
+  finished, you're asked to confirm (**Keep Them** is the default). Each
+  original is then compared byte for byte with its copy, and deleted only if
+  they match exactly. Anything that doesn't match, couldn't be copied, or
+  wasn't imported this time (already in your library, or outside the chosen
+  dates) stays on the device. The device's folders (like `DCIM`) are left for
+  the camera. If you stop an import part-way, nothing is offered for deletion.
+  Deleting from a device is permanent, because removable drives don't have a
+  real Trash.
 
 Which devices show up:
 
