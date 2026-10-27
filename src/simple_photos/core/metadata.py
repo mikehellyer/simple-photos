@@ -28,6 +28,12 @@ PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".jpe", ".png", ".tif", ".tiff", ".webp", "
 if HEIF_SUPPORTED:
     PHOTO_EXTENSIONS |= {".heic", ".heif", ".avif"}
 
+from simple_photos.core import raw as _raw  # noqa: E402  (after PhotoInfo's imports; raw.py imports lazily)
+
+RAW_SUPPORTED = _raw.available()
+if RAW_SUPPORTED:
+    PHOTO_EXTENSIONS |= _raw.RAW_EXTENSIONS
+
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Base IFD tags
@@ -113,6 +119,10 @@ def read_photo_info(path: str | Path) -> PhotoInfo:
     """Raises OSError (or Pillow's subclasses of it) if the file can't be
     opened as an image at all; anything missing inside it is just left
     blank."""
+    if _raw.is_raw(path):
+        # Before Pillow, which opens some RAWs as a TIFF and finds only a
+        # tiny thumbnail in them.
+        return _raw.read_info(path)
     info = PhotoInfo()
     with Image.open(path) as image:
         info.width, info.height = image.size

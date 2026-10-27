@@ -52,7 +52,7 @@ a = Analysis(
         (str(src / "simple_photos" / "gui" / "resources" / "icon.png"), "simple_photos/gui/resources"),
         *cascade_files,
     ],
-    hiddenimports=["pillow_heif", "cv2", "numpy"],
+    hiddenimports=["pillow_heif", "cv2", "numpy", "rawpy"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

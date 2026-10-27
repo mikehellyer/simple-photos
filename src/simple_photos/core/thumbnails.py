@@ -17,6 +17,7 @@ from typing import Optional
 from PIL import Image, ImageOps
 
 from simple_photos.core import metadata  # noqa: F401  (registers the HEIF opener)
+from simple_photos.core import raw
 from simple_photos.core.diagnostics import note_current_file
 
 THUMBNAIL_SIZE = 400  # longest side, in pixels — sharp at the grid's largest size
@@ -33,6 +34,11 @@ def load_image(path: str | Path, max_size: Optional[int] = None) -> Image.Image:
     no bigger than max_size on its longest side if given. Raises OSError
     if it can't be decoded."""
     note_current_file(str(path))
+    if raw.is_raw(path):
+        image = raw.preview(path, max_size)
+        if max_size:
+            image.thumbnail((max_size, max_size), Image.LANCZOS)
+        return image
     with Image.open(path) as image:
         if max_size and image.format == "JPEG":
             # Let libjpeg decode at 1/2, 1/4 or 1/8 scale — far faster.

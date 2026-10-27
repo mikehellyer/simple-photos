@@ -109,12 +109,16 @@ def same_size_groups(sizes: dict[int, int]) -> list[list[int]]:
 
 
 def group_duplicates(
-    digests: dict[int, str], hashes: dict[int, int | tuple[int, ...]], max_distance: Optional[int]
+    digests: dict[int, str],
+    hashes: dict[int, int | tuple[int, ...]],
+    max_distance: Optional[int],
+    never_pair: frozenset[frozenset[int]] = frozenset(),
 ) -> list[list[int]]:
     """Groups of photo ids that are duplicates: the same digest, or (if
     max_distance isn't None) hashes at most that many bits apart. A hash
     may be a tuple from dhash_turns(): then a photo also matches a copy
-    of itself that's been turned."""
+    of itself that's been turned. Pairs in never_pair aren't matched by
+    look (a camera's RAW + JPEG of one shot)."""
     groups = _Groups()
     by_digest: dict[str, int] = {}
     for photo_id, digest in digests.items():
@@ -137,7 +141,9 @@ def group_duplicates(
                     [np.bitwise_count(rest ^ np.uint64(turned)) for turned in usable[i][1]], axis=0
                 )
                 for j in np.nonzero(distances <= max_distance)[0]:
-                    groups.join(int(ids[i]), int(ids[i + 1 + j]))
+                    a, b = int(ids[i]), int(ids[i + 1 + j])
+                    if frozenset((a, b)) not in never_pair:
+                        groups.join(a, b)
     return sorted(groups.groups(), key=lambda g: g[0])
 
 
@@ -164,6 +170,25 @@ def best_copy(candidates: Iterable[Candidate]) -> int:
         candidates,
         key=lambda c: (-(c.width * c.height), -c.file_size, -c.rating, -c.tag_count, c.date_added, c.path),
     ).id
+
+
+def raw_jpeg_pairs(candidates: Iterable[Candidate]) -> frozenset[frozenset[int]]:
+    """A camera set to RAW + JPEG saves IMG_0001.CR3 and IMG_0001.JPG for
+    one shot. They look alike but both are wanted: these pairs."""
+    import os
+
+    from simple_photos.core.raw import is_raw
+
+    by_shot: dict[tuple[str, str], list[Candidate]] = {}
+    for c in candidates:
+        folder, name = os.path.split(c.path)
+        by_shot.setdefault((os.path.normcase(folder), os.path.splitext(name)[0].lower()), []).append(c)
+    pairs = set()
+    for shot in by_shot.values():
+        raws = [c.id for c in shot if is_raw(c.path)]
+        others = [c.id for c in shot if not is_raw(c.path)]
+        pairs.update(frozenset((r, o)) for r in raws for o in others)
+    return frozenset(pairs)
 
 
 @dataclass
@@ -250,7 +275,8 @@ def search(
     hashes = {pid: decode_hashes(h) for pid, (_, h) in known.items() if pid in by_id and h}
     if progress:
         progress(total, total, "Matching")
-    id_groups = group_duplicates(digests, hashes, max_distance) if not stopped else []
+    pairs = raw_jpeg_pairs(candidates)
+    id_groups = group_duplicates(digests, hashes, max_distance, pairs) if not stopped else []
 
     groups, thumbnails = [], {}
     for ids in id_groups:

@@ -10,7 +10,9 @@ def self_test() -> int:
     from simple_photos.core import autorotate
     from simple_photos.core.metadata import HEIF_SUPPORTED
 
-    checks = {"heic": HEIF_SUPPORTED, "auto-rotate": autorotate.available()}
+    from simple_photos.core import raw
+
+    checks = {"heic": HEIF_SUPPORTED, "raw": raw.available(), "auto-rotate": autorotate.available()}
     report = ", ".join(f"{name}: {'ok' if ok else 'MISSING'}" for name, ok in checks.items())
     try:
         print(f"Simple-Photos {__version__} self-test — {report}", flush=True)

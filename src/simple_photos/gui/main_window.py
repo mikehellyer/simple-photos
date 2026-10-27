@@ -36,7 +36,7 @@ from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
 from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
 from simple_photos.core.thumbnails import ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
-from simple_photos.core import duplicates, importer
+from simple_photos.core import duplicates, importer, raw
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
 from simple_photos.gui.duplicates_dialog import DuplicatesDialog, FindDuplicatesDialog
 from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
@@ -743,8 +743,12 @@ class MainWindow(QMainWindow):
             return
         rotatable = [(row, turns) for row, turns in items if can_rotate(row.path)]
         if not rotatable:
-            ext = os.path.splitext(items[0][0].path)[1] or "these"
-            self._status.showMessage(f"Rotating {ext} files isn't supported (it would lose quality)", 6000)
+            path = items[0][0].path
+            if raw.is_raw(path):
+                self._status.showMessage("Rotating RAW files isn't supported yet", 6000)
+            else:
+                ext = os.path.splitext(path)[1] or "these"
+                self._status.showMessage(f"Rotating {ext} files isn't supported (it would lose quality)", 6000)
             return
         self._pause_scan()
         self._moving = True

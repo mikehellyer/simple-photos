@@ -176,8 +176,27 @@ its back.
 Manager**, and **Move to Trash** (it goes to the system Trash, so it can be
 restored).
 
-**Formats**: JPEG, PNG, TIFF, WebP, GIF, BMP, and HEIC/HEIF/AVIF (iPhone
-photos).
+**Formats**: JPEG, PNG, TIFF, WebP, GIF, BMP, HEIC/HEIF/AVIF (iPhone photos),
+and **RAW** files from almost every camera: Canon CR3/CR2/CRW, Nikon NEF/NRW,
+Sony ARW/SR2, Fujifilm RAF, Olympus/OM ORF, Panasonic RW2, Pentax PEF,
+Samsung SRW, Leica RWL, Hasselblad 3FR, Phase One IIQ, Sigma X3F, and DNG.
+
+**RAW files** are read with [LibRaw](https://www.libraw.org) (via rawpy), the
+same library digiKam and darktable use:
+
+- **Thumbnails and the viewer** use the JPEG preview every camera embeds in its
+  RAWs, so they're as quick as JPEGs, turned the right way up.
+- **Full resolution in the viewer.** Some cameras embed only a small preview
+  (some Sony models' is 1616 × 1080 for a 24-megapixel photo). For those, the
+  viewer shows it at once, then develops the full RAW in the background (about
+  a second) and swaps it in without the view jumping.
+- **Camera details** (date, camera, lens, exposure, ISO) come from LibRaw, so
+  they work for every maker's format.
+- **RAW + JPEG.** A camera set to RAW + JPEG saves two files per shot
+  (`IMG_0001.CR3` and `IMG_0001.JPG`). Both are shown, and Find Duplicates
+  never offers to remove one of a pair like this.
+- **Not supported yet:** rotating RAW files, and editing them (exposure, white
+  balance). Simple-Photos is a viewer and organiser, not a RAW developer.
 
 Face detection uses [OpenCV](https://opencv.org)'s bundled Haar cascades and
 runs entirely on your computer. OpenCV adds about 55 MB to the installers.
@@ -229,6 +248,7 @@ pytest
     lossless formats)
   - `autorotate.py`: spotting sideways photos by their faces (OpenCV)
   - `duplicates.py`: exact-copy and look-alike fingerprints, and grouping
+  - `raw.py`: RAW files via LibRaw: previews, developing, camera details
   - `devices.py` and `importer.py`: spotting plugged-in devices, and importing from them
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,

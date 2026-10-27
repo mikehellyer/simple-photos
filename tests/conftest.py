@@ -63,3 +63,42 @@ def _dms(value: float):
     seconds = round(((value - degrees) * 60 - minutes) * 60, 4)
     seconds = Fraction(seconds).limit_denominator(10000)
     return (IFDRational(degrees, 1), IFDRational(minutes, 1), IFDRational(seconds.numerator, seconds.denominator))
+
+
+def make_dng(path: Path, width=128, height=96, orientation=1, taken="2024:07:14 18:03:22", model="Test Cam") -> Path:
+    """A tiny but real DNG, laid out as cameras write them: a small RGB
+    preview (red left half, blue right) with the raw sensor data in a
+    sub-directory. Needs tifffile (a test-only dependency)."""
+    import numpy as np
+    import tifffile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    preview = np.zeros((height // 2, width // 2, 3), np.uint8)
+    preview[:, : width // 4] = (220, 40, 40)
+    preview[:, width // 4 :] = (40, 40, 220)
+    sensor = np.full((height, width), 2000, np.uint16)
+    sensor[:, : width // 2] = 30000
+    tags = [
+        (271, "s", 0, "Simple", True),
+        (272, "s", 0, model, True),
+        (274, "H", 1, orientation, True),
+        (306, "s", 0, taken, True),
+        (36867, "s", 0, taken, True),
+        (50706, "B", 4, (1, 4, 0, 0), True),  # DNGVersion
+        (50708, "s", 0, model, True),  # UniqueCameraModel
+        (50721, "2i", 9, (1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1), True),  # ColorMatrix1
+        (50778, "H", 1, 21, True),  # CalibrationIlluminant1: D65
+    ]
+    with tifffile.TiffWriter(path) as tif:
+        tif.write(preview, photometric="rgb", subfiletype=1, subifds=1, extratags=tags)
+        tif.write(
+            sensor,
+            photometric=32803,  # CFA
+            extratags=[
+                (33421, "H", 2, (2, 2), True),  # CFARepeatPatternDim
+                (33422, "B", 4, (0, 1, 1, 2), True),  # CFAPattern: RGGB
+                (50714, "H", 1, 0, True),  # BlackLevel
+                (50717, "H", 1, 65535, True),  # WhiteLevel
+            ],
+        )
+    return path

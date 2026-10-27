@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from simple_photos.core.library import PhotoRow
+from simple_photos.core import raw
 from simple_photos.core.thumbnails import load_image
 from simple_photos.gui.star_rating import StarRating
 from simple_photos.gui.workers import BackgroundRunner
@@ -31,12 +32,24 @@ MAX_DECODE_SIZE = 12000  # px, longest side — beyond this, panoramas are scale
 SLIDESHOW_INTERVAL_MS = 4000
 
 
-def decode(path: str) -> QImage:
-    image = load_image(path, MAX_DECODE_SIZE)
+def to_qimage(image) -> QImage:
     if image.mode != "RGBA":
         image = image.convert("RGBA")
     qimage = QImage(image.tobytes("raw", "RGBA"), image.width, image.height, image.width * 4, QImage.Format_RGBA8888)
     return qimage.copy()  # own the pixels; the bytes object above is temporary
+
+
+def decode(path: str) -> QImage:
+    """The photo for viewing — for a RAW, its embedded preview."""
+    return to_qimage(load_image(path, MAX_DECODE_SIZE))
+
+
+def develop_if_needed(path: str, shown_width: int, shown_height: int) -> QImage | None:
+    """For a RAW whose preview is much smaller than the photo: the RAW
+    developed in full (about a second). None if the preview will do."""
+    if not raw.needs_developing(path, shown_width, shown_height):
+        return None
+    return to_qimage(raw.develop(path))
 
 
 class ImageView(QGraphicsView):
@@ -71,6 +84,25 @@ class ImageView(QGraphicsView):
         self._item.setPixmap(pixmap)
         self._scene.setSceneRect(QRectF(0, 0, *self._image_size))
         self.fit()
+
+    def replace_pixmap(self, pixmap: QPixmap) -> None:
+        """Swap in a sharper version of the same photo (a developed RAW)
+        without the view jumping: same place, same apparent zoom."""
+        if self._fitted or not self._image_size[0]:
+            self.set_pixmap(pixmap)
+            return
+        old_width = self._image_size[0]
+        centre = self.mapToScene(self.viewport().rect().center())
+        relative = (centre.x() / old_width, centre.y() / self._image_size[1])
+        zoom = self.current_zoom() * old_width / pixmap.width()
+        self._upscale = False
+        self._image_size = (pixmap.width(), pixmap.height())
+        self._item.setPixmap(pixmap)
+        self._scene.setSceneRect(QRectF(0, 0, *self._image_size))
+        self.resetTransform()
+        self.scale(zoom, zoom)
+        self.centerOn(relative[0] * pixmap.width(), relative[1] * pixmap.height())
+        self.zoom_changed.emit(zoom)
 
     def clear(self) -> None:
         self._item.setPixmap(QPixmap())
@@ -320,6 +352,18 @@ class ViewerPage(QWidget):
         if request != self._request:
             return
         self.view.set_pixmap(QPixmap.fromImage(image))
+        photo = self.current_photo()
+        if photo is not None and raw.is_raw(photo.path):
+            # Shown already from its preview; develop it if that's small.
+            self._runner.run(
+                lambda path=photo.path, w=image.width(), h=image.height(): develop_if_needed(path, w, h),
+                lambda developed: self._on_developed(request, developed),
+                lambda error: None,  # the preview stays: still a fine view
+            )
+
+    def _on_developed(self, request: int, image: QImage | None) -> None:
+        if request == self._request and image is not None:
+            self.view.replace_pixmap(QPixmap.fromImage(image))
 
     def _on_failed(self, request: int, error: Exception) -> None:
         if request == self._request:
