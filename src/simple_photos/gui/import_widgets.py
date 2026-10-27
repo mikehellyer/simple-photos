@@ -19,13 +19,14 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from simple_photos.core.devices import Device, Volume, pick_devices
 from simple_photos.core.fileops import folder_name_problem, free_name
-from simple_photos.core.importer import DeviceScan, default_folder_name
+from simple_photos.core.importer import DeviceScan, cutoff_date, default_folder_name, taken_since
 from simple_photos.core.metadata import format_size
 from simple_photos.gui.folder_dialogs import short_path
 
@@ -124,18 +125,27 @@ class DevicesPanel(QWidget):
             self.import_requested.emit(device)
 
 
-def _nice_date(iso: str) -> str:
+def _nice_date(iso: str, weekday: bool = False) -> str:
     try:
         day = _dt.date.fromisoformat(iso)
     except ValueError:
         return iso
-    return f"{day.day} {day.strftime('%B %Y')}"
+    text = f"{day.day} {day.strftime('%B %Y')}"
+    return f"{day.strftime('%A')} {text}" if weekday else text
 
 
 class ImportDialog(QDialog):
     """What was found on the device, and where it's going."""
 
-    def __init__(self, scan: DeviceScan, source_name: str, parents: list[str], verify: bool = False, parent=None):
+    def __init__(
+        self,
+        scan: DeviceScan,
+        source_name: str,
+        parents: list[str],
+        verify: bool = False,
+        period: tuple[str, int] = ("all", 7),
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle(f"Import from {source_name}")
         self.setMinimumWidth(560)
@@ -153,9 +163,35 @@ class ImportDialog(QDialog):
         found.setWordWrap(True)
         layout.addWidget(found)
 
+        # Which photos, by when they were taken.
+        unit, number = period
+        period_row = QHBoxLayout()
+        period_row.addWidget(QLabel("Import:"))
+        self._scope = QComboBox()
+        self._scope.addItems(["All photos", "Photos taken in the last"])
+        self._scope.setCurrentIndex(0 if unit == "all" else 1)
+        period_row.addWidget(self._scope)
+        self._count = QSpinBox()
+        self._count.setRange(1, 999)
+        self._count.setValue(number)
+        period_row.addWidget(self._count)
+        self._unit = QComboBox()
+        for key in ("days", "weeks", "months"):
+            self._unit.addItem(key, key)
+        self._unit.setCurrentIndex(max(0, self._unit.findData(unit)))
+        period_row.addWidget(self._unit)
+        period_row.addStretch(1)
+        layout.addLayout(period_row)
+        self._period_note = QLabel()
+        self._period_note.setStyleSheet("color: palette(mid);")
+        layout.addWidget(self._period_note)
+        for widget in (self._scope, self._unit):
+            widget.currentIndexChanged.connect(self._update)
+        self._count.valueChanged.connect(self._update)
+
         already = count - len(scan.new_photos)
         self._some_already = already > 0
-        self._skip = QCheckBox(f"Skip the {already:,} already in your library" if already != 1 else "Skip the 1 already in your library")
+        self._skip = QCheckBox()
         self._skip.setChecked(True)
         self._skip.setVisible(already > 0)
         self._skip.toggled.connect(self._update)
@@ -198,9 +234,20 @@ class ImportDialog(QDialog):
         self._name.selectAll()
         self._update()
 
+    def period(self) -> tuple[str, int]:
+        """("all" / "days" / "weeks" / "months", how many) — to remember."""
+        unit = "all" if self._scope.currentIndex() == 0 else self._unit.currentData()
+        return unit, self._count.value()
+
+    def in_range(self):
+        """The photos taken in the chosen period (all of them for "All")."""
+        return taken_since(self._scan.photos, cutoff_date(self._count.value(), self.period()[0]))
+
     def photos(self):
+        """The photos to copy (before any byte-for-byte check)."""
         # (Not isVisible(): once the dialog closes, nothing in it is visible.)
-        return self._scan.new_photos if self._skipping() else self._scan.photos
+        skipping = self._skipping()
+        return [p for p in self.in_range() if not (skipping and p.already_imported)]
 
     def _skipping(self) -> bool:
         return self._some_already and self._skip.isChecked()
@@ -209,7 +256,7 @@ class ImportDialog(QDialog):
         """The photos that look already imported, if they're to be checked
         byte for byte before being skipped."""
         if self._skipping() and self._verify.isChecked():
-            return [p for p in self._scan.photos if p.already_imported]
+            return [p for p in self.in_range() if p.already_imported]
         return []
 
     def parent_folder(self) -> str:
@@ -220,6 +267,23 @@ class ImportDialog(QDialog):
 
     def _update(self) -> None:
         ok = self._buttons.button(QDialogButtonBox.Ok)
+        unit, number = self.period()
+        for widget in (self._count, self._unit):
+            widget.setVisible(unit != "all")
+        for i, key in enumerate(("days", "weeks", "months")):
+            self._unit.setItemText(i, key[:-1] if number == 1 else key)  # "1 day", "2 days"
+        in_range = self.in_range()
+        cutoff = cutoff_date(number, unit)
+        if cutoff is None:
+            self._period_note.hide()
+        else:
+            total = len(self._scan.photos)
+            self._period_note.setText(
+                f"Taken on or after {_nice_date(cutoff.isoformat(), weekday=True)} — {len(in_range):,} of {total:,} photos"
+            )
+            self._period_note.show()
+        already = sum(p.already_imported for p in in_range)
+        self._skip.setText(f"Skip the {already:,} already in your library" if already != 1 else "Skip the 1 already in your library")
         count = len(self.photos())
         checking = len(self.photos_to_check())
         self._verify.setEnabled(self._skip.isChecked())
@@ -227,6 +291,8 @@ class ImportDialog(QDialog):
         problem = folder_name_problem(name) if name else "Type a name for the new folder."
         if problem:
             self._where.setText(f"<span style='color:#c0392b'>{problem}</span>")
+        elif not in_range:
+            self._where.setText("None were taken in that time.")
         elif count == 0 and not checking:
             self._where.setText("They're all in your library already.")
         else:

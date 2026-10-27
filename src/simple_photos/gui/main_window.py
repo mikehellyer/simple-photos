@@ -1152,13 +1152,20 @@ class MainWindow(QMainWindow):
         if not scan.photos:
             QMessageBox.information(self, "Import", f"No photos found on {name}.")
             return
-        dialog = ImportDialog(scan, name, self._import_parents(), verify=self._settings.settings.import_verify, parent=self)
+        s = self._settings.settings
+        dialog = ImportDialog(
+            scan, name, self._import_parents(),
+            verify=s.import_verify, period=(s.import_period_unit, s.import_period_count), parent=self,
+        )
         if not dialog.exec():
             return
+        unit, number = dialog.period()
+        self._settings.update(import_period_unit=unit, import_period_count=number)  # next time, the same
         photos, parent, folder_name = dialog.photos(), dialog.parent_folder(), dialog.folder_name()
         to_check = dialog.photos_to_check()
         matches = self._library.import_matches() if to_check else {}
-        skipped_before = len(scan.photos) - len(photos)
+        in_range = dialog.in_range()
+        skipped_before = len(in_range) - len(photos)
 
         def job(worker: ScanWorker, cancel):
             wanted = list(photos)
@@ -1173,7 +1180,7 @@ class MainWindow(QMainWindow):
                     return None
                 order = {id(p): i for i, p in enumerate(scan.photos)}
                 wanted = sorted(wanted + different, key=lambda p: order[id(p)])
-            skipped = len(scan.photos) - len(wanted) if skipped_before else 0
+            skipped = len(in_range) - len(wanted) if skipped_before else 0
             if not wanted:
                 return importer.ImportResult(folder=""), skipped
             result = importer.import_photos(

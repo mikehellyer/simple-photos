@@ -128,6 +128,36 @@ def not_really_imported(
     return different
 
 
+PERIOD_UNITS = ("all", "days", "weeks", "months")
+
+
+def cutoff_date(count: int, unit: str, today: Optional[_dt.date] = None) -> Optional[_dt.date]:
+    """The first day of "the last <count> <unit>": photos taken on or after
+    it are imported. None for "all". A month back from 31 March is the
+    last day of February."""
+    if unit not in ("days", "weeks", "months") or count < 1:
+        return None
+    today = today or _dt.date.today()
+    if unit == "days":
+        return today - _dt.timedelta(days=count)
+    if unit == "weeks":
+        return today - _dt.timedelta(weeks=count)
+    month_index = today.year * 12 + (today.month - 1) - count
+    year, month = divmod(month_index, 12)
+    month += 1
+    last_day = (_dt.date(year + (month == 12), month % 12 + 1, 1) - _dt.timedelta(days=1)).day
+    return _dt.date(year, month, min(today.day, last_day))
+
+
+def taken_since(photos: list[SourcePhoto], cutoff: Optional[_dt.date]) -> list[SourcePhoto]:
+    """The photos taken on or after cutoff (all of them if it's None). A
+    photo with no date at all is kept rather than silently left behind."""
+    if cutoff is None:
+        return list(photos)
+    first = cutoff.isoformat()
+    return [p for p in photos if not p.taken or p.taken[:10] >= first]
+
+
 def safe_folder_name(name: str) -> str:
     """name with anything not allowed in a folder name on some OS replaced."""
     cleaned = "".join("-" if folder_name_problem(ch) and ch not in " .," else ch for ch in name)

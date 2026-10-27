@@ -125,3 +125,41 @@ def test_settings_remember_import_choices(tmp_path):
     store.update(import_folder="/p/Imports", import_verify=True)
     again = SettingsStore(tmp_path / "settings.json").settings
     assert again.import_folder == "/p/Imports" and again.import_verify is True
+
+
+def test_cutoff_dates():
+    from simple_photos.core.importer import cutoff_date
+
+    today = datetime.date(2026, 10, 27)
+    assert cutoff_date(1, "all", today) is None
+    assert cutoff_date(7, "days", today) == datetime.date(2026, 10, 20)
+    assert cutoff_date(2, "weeks", today) == datetime.date(2026, 10, 13)
+    assert cutoff_date(1, "months", today) == datetime.date(2026, 9, 27)
+    assert cutoff_date(12, "months", today) == datetime.date(2025, 10, 27)
+    assert cutoff_date(1, "months", datetime.date(2026, 3, 31)) == datetime.date(2026, 2, 28)  # no 31 February
+    assert cutoff_date(1, "months", datetime.date(2026, 1, 15)) == datetime.date(2025, 12, 15)
+    assert cutoff_date(0, "days", today) is None
+
+
+def test_only_photos_taken_since_the_cutoff(card):
+    from simple_photos.core.importer import SourcePhoto, taken_since
+
+    scan = find_photos(str(card))  # taken 20, 21 and 22 October 2026
+    assert len(taken_since(scan.photos, None)) == 3
+    assert [p.taken[:10] for p in taken_since(scan.photos, datetime.date(2026, 10, 21))] == ["2026-10-21", "2026-10-22"]
+    assert taken_since(scan.photos, datetime.date(2026, 10, 23)) == []
+    undated = SourcePhoto("/x.jpg", 1, "")
+    assert taken_since([undated], datetime.date(2026, 10, 23)) == [undated]
+
+
+def test_import_period_settings(tmp_path):
+    import json
+
+    from simple_photos.core.settings import SettingsStore
+
+    path = tmp_path / "settings.json"
+    s = SettingsStore(path).settings
+    assert (s.import_period_unit, s.import_period_count) == ("all", 7)
+    path.write_text(json.dumps({"import_period_unit": "fortnights", "import_period_count": 0}))
+    s = SettingsStore(path).settings
+    assert (s.import_period_unit, s.import_period_count) == ("all", 1)

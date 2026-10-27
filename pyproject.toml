@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simple-photos"
-version = "0.10.0"
+version = "0.11.0"
 description = "A simple photo manager"
 authors = [{ name = "Mike Hellyer" }]
 requires-python = ">=3.12"

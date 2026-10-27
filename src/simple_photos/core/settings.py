@@ -31,6 +31,8 @@ class Settings:
     scan_on_startup: bool = True
     import_folder: str = ""  # where imports go by default; "" = the first collection folder
     import_verify: bool = False  # byte-for-byte check before skipping photos already imported
+    import_period_unit: str = "all"  # import only photos taken in the last … "days" / "weeks" / "months"
+    import_period_count: int = 7
 
 
 class SettingsStore:
@@ -66,6 +68,9 @@ class SettingsStore:
         self.settings.thumb_size = max(THUMB_MIN, min(THUMB_MAX, self.settings.thumb_size))
         if self.settings.sort not in SORTS:
             self.settings.sort = "taken"
+        if self.settings.import_period_unit not in ("all", "days", "weeks", "months"):
+            self.settings.import_period_unit = "all"
+        self.settings.import_period_count = max(1, min(999, self.settings.import_period_count))
 
     def save(self) -> None:
         try:

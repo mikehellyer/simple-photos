@@ -33,6 +33,11 @@ same place, such as `~/Pictures/Imports`, set it in **Settings ▸ Importing**.
 It must be inside one of your collection folders, and it's made again if it
 has been deleted. Left empty, imports go into your first collection folder.
 
+- **Import: All photos**, or **Photos taken in the last [7] [days / weeks /
+  months]**. This goes by the date each photo was taken, and the window spells
+  out what it means (e.g. "Taken on or after Tuesday 20 October 2026 — 12 of
+  312 photos"). Your last choice is remembered for next time. Photos with no
+  date at all are always included.
 - **Skip photos already in your library** is on by default, so putting the
   same card in again doesn't make copies. A photo counts as already
   imported if one with the same file size and date taken is already in the
