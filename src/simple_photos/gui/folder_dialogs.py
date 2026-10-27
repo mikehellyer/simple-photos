@@ -106,14 +106,17 @@ def _reason(error: Exception) -> str:
 class MoveToFolderDialog(QDialog):
     last_destination: Optional[str] = None  # preselected next time
 
-    def __init__(self, library: Library, roots: list[str], count: int, current_folder: Optional[str], parent=None):
+    def __init__(
+        self, library: Library, roots: list[str], count: int, current_folder: Optional[str], parent=None, copying: bool = False
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Move to Folder")
+        verb = "Copy" if copying else "Move"
+        self.setWindowTitle(f"{verb} to Folder")
         self.resize(460, 520)
         self._library = library
         self._roots = roots
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Move {'the photo' if count == 1 else f'{count:,} photos'} to:"))
+        layout.addWidget(QLabel(f"{verb} {'the photo' if count == 1 else f'{count:,} photos'} to:"))
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setColumnCount(2)
@@ -127,7 +130,7 @@ class MoveToFolderDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.addButton(self._new_button, QDialogButtonBox.ResetRole)
         self._move_button = buttons.button(QDialogButtonBox.Ok)
-        self._move_button.setText("Move")
+        self._move_button.setText(verb)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

@@ -1,5 +1,6 @@
-"""File operations on the collection itself: making folders, moving
-photos between them, and showing a photo in the system's file manager."""
+"""File operations on the collection itself: making folders, moving and
+copying photos between them, and showing a photo in the system's file
+manager."""
 from __future__ import annotations
 
 import os
@@ -161,6 +162,47 @@ def move_photos(
                 result.failed.append((path, error.strerror or str(error)))
             else:
                 result.moved.append((path, target))
+        if progress:
+            progress(done, len(paths))
+    return result
+
+
+@dataclass
+class CopyResult:
+    copied: list[tuple[str, str]] = field(default_factory=list)  # (original, copy)
+    failed: list[tuple[str, str]] = field(default_factory=list)  # (path, reason)
+
+
+def copy_photos(
+    paths: list[str], destination: str, progress: Optional[Callable[[int, int], None]] = None
+) -> CopyResult:
+    """Copy each file into destination, keeping its dates and never
+    overwriting: a clash (even with itself, copied into its own folder)
+    gets ' (2)' added. Each copy is made as a .part file and renamed when
+    complete, so a failure never leaves half a photo."""
+    result = CopyResult()
+    taken: set[str] = set()
+    destination = os.path.normpath(destination)
+    if not os.path.isdir(destination):
+        result.failed = [(p, f"{destination} isn't there any more") for p in paths]
+        return result
+    for done, path in enumerate(paths, start=1):
+        name = free_name(destination, os.path.basename(path), taken)
+        taken.add(name.lower())
+        target = os.path.join(destination, name)
+        partial = target + ".part"
+        try:
+            shutil.copyfile(path, partial)
+            shutil.copystat(path, partial)
+            os.replace(partial, target)
+        except OSError as error:
+            result.failed.append((path, error.strerror or str(error)))
+            try:
+                os.remove(partial)
+            except OSError:
+                pass
+        else:
+            result.copied.append((path, target))
         if progress:
             progress(done, len(paths))
     return result

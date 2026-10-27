@@ -131,3 +131,32 @@ def test_links_count_as_content(tmp_path):
     except OSError:
         pytest.skip("can't make symlinks here")
     assert not is_blank_folder(str(tmp_path / "Linky"))
+
+
+def test_copy_photos_never_overwrites_and_keeps_dates(tmp_path):
+    from simple_photos.core.fileops import copy_photos
+
+    src, dest = tmp_path / "src", tmp_path / "dest"
+    src.mkdir()
+    dest.mkdir()
+    (src / "a.jpg").write_text("A")
+    (src / "b.jpg").write_text("B")
+    (dest / "b.jpg").write_text("already here")
+    os.utime(src / "a.jpg", (1_600_000_000, 1_600_000_000))
+    result = copy_photos([str(src / "a.jpg"), str(src / "b.jpg")], str(dest))
+    assert [os.path.basename(new) for _, new in result.copied] == ["a.jpg", "b (2).jpg"]
+    assert (dest / "b.jpg").read_text() == "already here"
+    assert (src / "a.jpg").exists() and (src / "b.jpg").exists()  # originals stay
+    assert os.stat(dest / "a.jpg").st_mtime == 1_600_000_000
+    into_itself = copy_photos([str(src / "a.jpg")], str(src))
+    assert os.path.basename(into_itself.copied[0][1]) == "a (2).jpg"
+    assert not [f for f in os.listdir(dest) if f.endswith(".part")]
+
+
+def test_copy_reports_failures(tmp_path):
+    from simple_photos.core.fileops import copy_photos
+
+    (tmp_path / "d").mkdir()
+    result = copy_photos([str(tmp_path / "missing.jpg")], str(tmp_path / "d"))
+    assert result.failed and not result.copied
+    assert copy_photos([str(tmp_path / "x.jpg")], str(tmp_path / "nowhere")).failed

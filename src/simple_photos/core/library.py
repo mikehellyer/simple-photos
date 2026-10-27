@@ -596,6 +596,33 @@ class Library:
         self._db.execute("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM photo_tags)")
         self._db.commit()
 
+    def add_copies(self, copies: Iterable[tuple[str, str]]) -> list[int]:
+        """Photos just copied: (original path, copy path). Each copy is read
+        and added, taking its original's rating, tags and caption. The new
+        photo ids, in order (a copy that couldn't be read isn't added)."""
+        result = ScanResult()
+        new_ids = []
+        for original, copy in copies:
+            original, copy = _norm(original), _norm(copy)
+            try:
+                stat = os.stat(copy)
+            except OSError:
+                continue
+            exists = self._db.execute("SELECT 1 FROM photos WHERE path = ?", (copy,)).fetchone() is not None
+            self._write(self._read(copy, stat, result), exists, result)
+            new_id = self._db.execute("SELECT id FROM photos WHERE path = ?", (copy,)).fetchone()[0]
+            source = self._db.execute("SELECT id, rating, caption FROM photos WHERE path = ?", (original,)).fetchone()
+            if source is not None:
+                self._db.execute("UPDATE photos SET rating = ?, caption = ? WHERE id = ?", (source[1], source[2], new_id))
+                self._db.execute(
+                    "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) SELECT ?, tag_id FROM photo_tags WHERE photo_id = ?",
+                    (new_id, source[0]),
+                )
+            self._db.execute("INSERT OR IGNORE INTO folders (path) VALUES (?)", (os.path.dirname(copy),))
+            new_ids.append(new_id)
+        self._db.commit()
+        return new_ids
+
     def relocate(self, moves: Iterable[tuple[str, str]]) -> None:
         """Photos moved on disk: (old path, new path) pairs. They keep
         their ratings, tags and captions."""

@@ -99,3 +99,21 @@ def move_thumbnail(
         os.replace(old, new)
     except OSError:
         pass
+
+
+def copy_thumbnail(
+    old_path: str | Path, new_path: str | Path, mtime: float, cache_dir: Optional[Path] = None, size: int = THUMBNAIL_SIZE
+) -> None:
+    """A photo was copied (keeping its date): give the copy the original's
+    cached thumbnail so it needn't be made again. Never raises."""
+    import shutil
+
+    cache_dir = cache_dir or thumbnail_cache_dir()
+    old = thumbnail_path(old_path, mtime, cache_dir, size)
+    new = thumbnail_path(new_path, mtime, cache_dir, size)
+    try:
+        if old.exists() and not new.exists():
+            new.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(old, new)
+    except OSError:
+        pass

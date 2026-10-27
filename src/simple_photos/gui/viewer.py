@@ -184,6 +184,7 @@ class ViewerPage(QWidget):
     close_requested = Signal()  # Esc: leaves full screen first, if it's on
     back_requested = Signal()  # the ✕: straight back to the grid
     move_requested = Signal()
+    copy_requested = Signal()
     trash_requested = Signal()
     current_changed = Signal(int)
     position_changed = Signal(str)
@@ -255,9 +256,10 @@ class ViewerPage(QWidget):
             rotate.triggered.connect(lambda _=False, turns=turns: self.rotate_requested.emit(turns))
             self._toolbar.addAction(rotate)
         self._toolbar.addSeparator()
-        # Their shortcuts (Ctrl+Shift+M, Delete) belong to the window's Photo menu.
+        # Their shortcuts (Ctrl+Shift+M/C, Delete) belong to the window's Photo menu.
         for text, signal, tip in (
             ("Move…", self.move_requested, "Move this photo to another folder (Ctrl+Shift+M)"),
+            ("Copy…", self.copy_requested, "Copy this photo to another folder (Ctrl+Shift+C)"),
             ("Delete", self.trash_requested, "Move this photo to the Trash (Delete)"),
         ):
             button = QAction(text, self)

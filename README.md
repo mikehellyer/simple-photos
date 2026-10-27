@@ -194,6 +194,12 @@ one photo. Ratings, tags and captions from the copies you remove are added to
 the one you keep. Fingerprints are remembered, so later searches only look at
 new or changed photos.
 
+**Copying photos.** **Photo ▸ Copy to Folder…** (Ctrl+Shift+C) works just like
+Move. It's also on the right-click menu, as **Copy** on the viewer's toolbar,
+and as **Copy here** when you drop photos on a sidebar folder. Each copy keeps
+its original's rating, tags, caption and file dates. Files are never
+overwritten; a clash, even copying a photo into its own folder, gets "(2)".
+
 **Moving photos.** Select one or more photos and choose **Photo ▸ Move to
 Folder…** (Ctrl+Shift+M, also on the right-click menu and in the viewer).
 Then pick the destination, or make a new one there with **New Folder…**. You

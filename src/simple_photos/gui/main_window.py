@@ -29,12 +29,19 @@ from PySide6.QtWidgets import (
 from simple_photos import __version__
 from simple_photos.core.diagnostics import log_dir, log_event
 from simple_photos.core import autorotate
-from simple_photos.core.fileops import find_blank_folders, is_blank_folder, move_photos, rename_folder, reveal_in_file_manager
+from simple_photos.core.fileops import (
+    copy_photos,
+    find_blank_folders,
+    is_blank_folder,
+    move_photos,
+    rename_folder,
+    reveal_in_file_manager,
+)
 from simple_photos.core.library import Library, PhotoFilter, ScanResult
 from simple_photos.core.self_update import download_asset, find_asset_for_this_platform, launch_installer
 from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
 from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
-from simple_photos.core.thumbnails import ensure_thumbnail, move_thumbnail, thumbnail_path
+from simple_photos.core.thumbnails import copy_thumbnail, ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
 from simple_photos.core import duplicates, importer, raw
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
@@ -125,6 +132,7 @@ class MainWindow(QMainWindow):
         self._viewer.close_requested.connect(self._viewer_escape)
         self._viewer.back_requested.connect(self._close_viewer)
         self._viewer.move_requested.connect(self._move_to_folder)
+        self._viewer.copy_requested.connect(self._copy_to_folder)
         self._viewer.trash_requested.connect(self._trash)
         self._viewer.current_changed.connect(self._on_viewer_moved)
         self._viewer.rate_requested.connect(lambda rating: self._rate_photos(self._viewer_ids(), rating))
@@ -282,6 +290,7 @@ class MainWindow(QMainWindow):
         reveal_action = action(photo_menu, "Show in File Manager", "Ctrl+Shift+R", self._reveal)
         action(photo_menu, "Show on Map", None, self._show_on_map)
         move_action = action(photo_menu, "Move to Folder…", "Ctrl+Shift+M", self._move_to_folder)
+        copy_action = action(photo_menu, "Copy to Folder…", "Ctrl+Shift+C", self._copy_to_folder)
         photo_menu.addSeparator()
         left_action = action(photo_menu, "Rotate Left", "Ctrl+L", lambda: self._rotate_photos([(row, -1) for row in self._active_rows()]))
         right_action = action(photo_menu, "Rotate Right", "Ctrl+R", lambda: self._rotate_photos([(row, 1) for row in self._active_rows()]))
@@ -294,7 +303,7 @@ class MainWindow(QMainWindow):
         action(photo_menu, "Add Tag…", "Ctrl+T", self._focus_tags)
         photo_menu.addSeparator()
         trash_action = action(photo_menu, "Move to Trash", QKeySequence.Delete, self._trash, local=True)
-        for act in (view_action, open_action, reveal_action, move_action, left_action, right_action):
+        for act in (view_action, open_action, reveal_action, move_action, copy_action, left_action, right_action):
             self._grid.addAction(act)
         separator = QAction(self)
         separator.setSeparator(True)
@@ -662,6 +671,12 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"Made {short_path(path)}", 5000)
 
     def _move_to_folder(self) -> None:
+        self._choose_folder_for(copying=False)
+
+    def _copy_to_folder(self) -> None:
+        self._choose_folder_for(copying=True)
+
+    def _choose_folder_for(self, copying: bool) -> None:
         rows = self._active_rows()
         if not rows:
             return
@@ -672,10 +687,11 @@ class MainWindow(QMainWindow):
             len(rows),
             folders.pop() if len(folders) == 1 else self._sidebar.selected_folder(),
             self,
+            copying=copying,
         )
         if dialog.exec() and dialog.destination():
             self._refresh_sidebar()  # the dialog may have made folders
-            self._move_photos(rows, dialog.destination())
+            (self._copy_photos if copying else self._move_photos)(rows, dialog.destination())
 
     def _photos_dropped(self, photo_ids: list[int], folder: str) -> None:
         wanted = set(photo_ids)
@@ -684,11 +700,57 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         what = f"“{rows[0].filename}”" if len(rows) == 1 else f"{len(rows):,} photos"
-        move = menu.addAction(f"Move {what} to {os.path.basename(folder) or folder}")
+        name = os.path.basename(folder) or folder
+        move = menu.addAction(f"Move {what} to {name}")
+        copy = menu.addAction(f"Copy {what} to {name}")
         menu.addSeparator()
         menu.addAction("Cancel")
-        if menu.exec(QCursor.pos()) is move:
+        chosen = menu.exec(QCursor.pos())
+        if chosen is move:
             self._move_photos(rows, folder)
+        elif chosen is copy:
+            self._copy_photos(rows, folder)
+
+    def _copy_photos(self, rows, destination: str) -> None:
+        if self._busy_with_files():
+            return
+        self._pause_scan()  # so it doesn't add the copies before they get their tags
+        self._info.save_caption()
+        self._moving = True
+        self._status.showMessage(f"Copying {len(rows):,} photo{'s' if len(rows) != 1 else ''}…")
+        mtimes = {row.path: row.file_mtime for row in rows}
+        paths = [row.path for row in rows]
+        cache_dir = self._model.loader.cache_dir
+
+        def job():
+            result = copy_photos(paths, destination)
+            for original, copy in result.copied:
+                copy_thumbnail(original, copy, mtimes[original], cache_dir)
+            return result
+
+        self._runner.run(job, lambda result: self._on_copied(result, destination), lambda error: self._on_copied(error, destination))
+
+    def _on_copied(self, result, destination: str) -> None:
+        self._moving = False
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Copy to Folder", f"Couldn't copy the photos: {result}")
+        else:
+            self._library.add_copies(result.copied)
+            self._refresh_sidebar()
+            self._reload_photos()
+            copied = len(result.copied)
+            where = short_path(destination)
+            if result.failed:
+                path, reason = result.failed[0]
+                QMessageBox.warning(
+                    self,
+                    "Copy to Folder",
+                    f"Copied {copied:,} to {where}, but {len(result.failed):,} couldn't be copied.\n\n"
+                    f"{os.path.basename(path)}: {reason}",
+                )
+            else:
+                self._status.showMessage(f"Copied {copied:,} photo{'s' if copied != 1 else ''} to {where}", 6000)
+        self._rescan_if_pending()
 
     def _move_photos(self, rows, destination: str) -> None:
         if self._busy_with_files():

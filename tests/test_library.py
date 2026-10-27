@@ -299,3 +299,21 @@ def test_edits_dont_wait_for_a_scan(tmp_path, monkeypatch):
     # Generous for slow, shared CI machines; the bug was seconds long.
     assert waits and max(waits) < 0.6
     assert ui.count() == 81
+
+
+def test_copies_take_their_originals_rating_tags_and_caption(library, collection, tmp_path):
+    import shutil
+
+    library.scan([collection])
+    beach = library.query(PhotoFilter(text="beach"))[0]
+    library.set_rating([beach.id], 4)
+    library.add_tag([beach.id], "Holiday")
+    library.set_caption([beach.id], "Waves")
+    copy = collection / "2024" / "beach.jpg"
+    shutil.copy2(beach.path, copy)
+    (new_id,) = library.add_copies([(beach.path, str(copy))])
+    photo = library.photo(new_id)
+    assert (photo.path, photo.rating, photo.caption) == (str(copy), 4, "Waves")
+    assert library.tags_for([new_id]) == {"Holiday": 1}
+    assert library.photo(beach.id).path == beach.path  # the original is untouched
+    assert library.scan([collection]).added == 0  # the scan agrees
