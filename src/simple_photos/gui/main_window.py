@@ -36,10 +36,11 @@ from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
 from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
 from simple_photos.core.thumbnails import ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
-from simple_photos.core import duplicates
+from simple_photos.core import duplicates, importer
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
 from simple_photos.gui.duplicates_dialog import DuplicatesDialog, FindDuplicatesDialog
 from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
+from simple_photos.gui.import_widgets import DevicesPanel, DeviceWatcher, ImportDialog
 from simple_photos.gui.info_panel import InfoPanel
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
 from simple_photos.gui.settings_dialog import SettingsDialog, normalise
@@ -97,7 +98,21 @@ class MainWindow(QMainWindow):
         self._sidebar.rename_folder_requested.connect(self._rename_folder)
         self._sidebar.delete_folder_requested.connect(self._delete_folder)
         self._sidebar.reveal_requested.connect(lambda folder: QDesktopServices.openUrl(QUrl.fromLocalFile(folder)))
-        self._splitter.addWidget(self._sidebar)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        left_layout.addWidget(self._sidebar, 1)
+        self._devices_panel = DevicesPanel()
+        self._devices_panel.import_requested.connect(lambda device: self._import_from(device.path, device.name))
+        left_layout.addWidget(self._devices_panel)
+        self._splitter.addWidget(left)
+        self._devices = DeviceWatcher(self)
+        self._devices.changed.connect(self._devices_panel.set_devices)
+        self._devices.arrived.connect(
+            lambda device: self._status.showMessage(f"{device.description} connected — Import Photos… is in the Devices list", 10000)
+        )
+        self._devices_panel.set_devices(self._devices.devices)
 
         self._stack = QStackedWidget()
         self._model = PhotoModel(self)
@@ -223,6 +238,9 @@ class MainWindow(QMainWindow):
             return act
 
         file_menu = self.menuBar().addMenu("&File")
+        self._import_menu = file_menu.addMenu("Import From")
+        self._import_menu.aboutToShow.connect(self._fill_import_menu)
+        file_menu.addSeparator()
         action(file_menu, "New Folder…", "Ctrl+Shift+N", lambda: self._new_folder(None))
         action(file_menu, "Rename Folder…", "F2", lambda: self._rename_folder(None))
         action(file_menu, "Delete Empty Folders…", None, self._delete_empty_folders)
@@ -789,7 +807,7 @@ class MainWindow(QMainWindow):
                     library,
                     library.duplicate_candidates(only),
                     mode,
-                    progress=lambda done, total, stage: worker.progress.emit(done, f"{total}\t{stage}"),
+                    progress=lambda done, total, stage: worker.progress.emit(done, f"{total}\t{stage}…"),
                     should_stop=cancel.is_set,
                     cache_dir=cache_dir,
                     workers=autorotate.worker_count(),
@@ -914,7 +932,7 @@ class MainWindow(QMainWindow):
             return
         if detail:
             total, stage = detail.split("\t", 1)
-            progress.setLabelText(f"{stage}…")
+            progress.setLabelText(stage)
             progress.setMaximum(int(total))
         else:
             progress.setMaximum(self._auto_checked)
@@ -957,6 +975,104 @@ class MainWindow(QMainWindow):
         dialog = AutoRotateDialog(rotatable, skipped, self)
         if dialog.exec():
             self._rotate_photos(dialog.chosen())
+
+    # --- importing ------------------------------------------------------
+
+    def _fill_import_menu(self) -> None:
+        self._devices.check()
+        menu = self._import_menu
+        menu.clear()
+        for device in self._devices.devices:
+            menu.addAction(device.description, lambda device=device: self._import_from(device.path, device.name))
+        if not self._devices.devices:
+            none = menu.addAction("No USB sticks, cards or cameras plugged in")
+            none.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Other Folder…", self._import_from_folder)
+
+    def _import_from_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Import Photos From")
+        if folder:
+            self._import_from(folder, os.path.basename(os.path.normpath(folder)) or folder)
+
+    def _import_parents(self) -> list[str]:
+        """Where an import's new folder can go: each collection folder
+        (the first is the default), then the folder picked in the sidebar."""
+        options = []
+        for root in self._settings.settings.collection_folders:
+            root = normalise(root)
+            if os.path.isdir(root) and root not in options:
+                options.append(root)
+        selected = self._sidebar.selected_folder()
+        if options and selected and os.path.isdir(selected) and selected not in options:
+            options.append(selected)
+        return options
+
+    def _import_from(self, source: str, name: str) -> None:
+        if self._auto_thread is not None or self._busy_with_files():
+            return
+        if not self._import_parents():
+            QMessageBox.information(self, "Import", "Add a folder to your collection first (File ▸ Add Folder to Collection…).")
+            return
+        known = self._library.import_signatures()
+
+        def job(worker: ScanWorker, cancel):
+            return importer.find_photos(
+                source,
+                known,
+                progress=lambda found: worker.progress.emit(found, f"0\tLooking for photos on {name}… {found:,} found"),
+                should_stop=cancel.is_set,
+            )
+
+        self._start_background_check(
+            "Import", f"Looking for photos on {name}…", job, lambda result, stopped: self._on_import_scanned(result, stopped, name)
+        )
+
+    def _on_import_scanned(self, scan, stopped: bool, name: str) -> None:
+        if isinstance(scan, Exception):
+            QMessageBox.warning(self, "Import", f"Couldn't read {name}: {scan}")
+            return
+        if stopped:
+            return
+        if not scan.photos:
+            QMessageBox.information(self, "Import", f"No photos found on {name}.")
+            return
+        dialog = ImportDialog(scan, name, self._import_parents(), self)
+        if not dialog.exec():
+            return
+        photos, parent, folder_name = dialog.photos(), dialog.parent_folder(), dialog.folder_name()
+
+        def job(worker: ScanWorker, cancel):
+            return importer.import_photos(
+                photos,
+                parent,
+                folder_name,
+                progress=lambda done, total: worker.progress.emit(done, f"{total}\tImporting {done:,} of {total:,}…"),
+                should_stop=cancel.is_set,
+            )
+
+        self._start_background_check("Import", f"Importing {len(photos):,} photos…", job, self._on_imported)
+
+    def _on_imported(self, result, stopped: bool) -> None:
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Import", f"The import didn't work: {result}")
+            return
+        self._library.add_folder(result.folder)
+        self._refresh_sidebar()
+        self._sidebar.select_folder(result.folder)
+        copied = len(result.copied)
+        where = short_path(result.folder)
+        if result.failed:
+            path, reason = result.failed[0]
+            QMessageBox.warning(
+                self, "Import",
+                f"Imported {copied:,} into {where}, but {len(result.failed):,} couldn't be copied.\n\n{os.path.basename(path)}: {reason}",
+            )
+        elif result.stopped:
+            self._status.showMessage(f"Import stopped — {copied:,} photo{'s' if copied != 1 else ''} copied into {where}", 10000)
+        else:
+            self._status.showMessage(f"Imported {copied:,} photo{'s' if copied != 1 else ''} into {where}", 10000)
+        self.rescan()
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add a Folder to the Collection")

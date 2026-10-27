@@ -19,6 +19,37 @@ It only re-reads files that have changed, so a big collection stays quick.
 If a folder is on a drive that's unplugged, its photos and their tags are
 kept until it's back.
 
+**Importing from USB sticks, cards, drives and cameras.** Plug one in and
+it appears in the **Devices** list under the sidebar, and the status bar
+says so. Double-click it (or select it and click **Import Photos…**), or use
+**File ▸ Import From ▸** for any connected device or **Other Folder…**.
+
+Simple-Photos looks through it for photos, skipping system folders like
+`$RECYCLE.BIN` and `.Trashes`, and shows how many there are, their size and
+the dates they were taken. The photos are copied into one new folder named
+with today's date and the device, such as **`2026-10-27 KINGSTON`**. You can
+change the name and choose which collection folder it goes in.
+
+- **Skip photos already in your library** is on by default, so putting the
+  same card in again doesn't make copies. A photo counts as already
+  imported if one with the same file size and date taken is already in the
+  library.
+- The copies keep the originals' dates. Files are never overwritten (a
+  clash gets "(2)"), and a stopped import never leaves half a file.
+- Nothing on the device is changed or deleted.
+
+Which devices show up:
+
+- **Linux**: anything the desktop mounts under `/media` or `/run/media`.
+  Phones and cameras connected in photo-transfer (MTP/PTP) mode also show
+  up, because GNOME makes them readable like a folder.
+- **macOS**: external volumes under `/Volumes`.
+- **Windows**: removable and external drives other than the Windows drive.
+
+A camera that connects as a drive (or its card in a card reader) works
+everywhere. RAW files aren't imported yet, only the formats Simple-Photos
+shows.
+
 **Browsing.** The sidebar has three ways in:
 
 - **Folders**: your folder tree, with photo counts. Tick or untick *Include
@@ -190,6 +221,7 @@ pytest
     lossless formats)
   - `autorotate.py`: spotting sideways photos by their faces (OpenCV)
   - `duplicates.py`: exact-copy and look-alike fingerprints, and grouping
+  - `devices.py` and `importer.py`: spotting plugged-in devices, and importing from them
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,
   info panel and viewer.

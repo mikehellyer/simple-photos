@@ -1,0 +1,92 @@
+import datetime
+import os
+import stat
+
+import pytest
+
+from conftest import make_photo
+from simple_photos.core.importer import (
+    default_folder_name,
+    find_photos,
+    import_photos,
+    safe_folder_name,
+)
+from simple_photos.core.library import Library
+
+
+@pytest.fixture
+def card(tmp_path):
+    """An SD card the way cameras lay one out."""
+    root = tmp_path / "EOS_DIGITAL"
+    make_photo(root / "DCIM" / "100CANON" / "IMG_0001.JPG", taken="2026:10:20 09:00:00")
+    make_photo(root / "DCIM" / "100CANON" / "IMG_0002.JPG", taken="2026:10:21 10:00:00", color=(1, 2, 3))
+    make_photo(root / "DCIM" / "101CANON" / "IMG_0001.JPG", taken="2026:10:22 11:00:00", color=(9, 9, 9))  # same name, another folder
+    (root / "DCIM" / "100CANON" / "MVI_0003.MP4").write_bytes(b"video")
+    make_photo(root / "$RECYCLE.BIN" / "deleted.jpg")
+    make_photo(root / ".Trashes" / "old.jpg")
+    (root / "MISC").mkdir()
+    return root
+
+
+def test_finds_the_photos_and_skips_system_folders(card):
+    scan = find_photos(str(card))
+    assert sorted(os.path.relpath(p.path, card) for p in scan.photos) == [
+        os.path.join("DCIM", "100CANON", "IMG_0001.JPG"),
+        os.path.join("DCIM", "100CANON", "IMG_0002.JPG"),
+        os.path.join("DCIM", "101CANON", "IMG_0001.JPG"),
+    ]
+    assert scan.date_range() == ("2026-10-20", "2026-10-22")
+    assert scan.total_size == sum(p.size for p in scan.photos)
+
+
+def test_photos_already_in_the_library_are_marked(card, tmp_path):
+    library = Library(tmp_path / "lib.db")
+    pictures = tmp_path / "Pictures"
+    first = find_photos(str(card))
+    import_photos(first.photos[:1], str(pictures), "earlier import")
+    library.scan([pictures])
+    again = find_photos(str(card), known=library.import_signatures())
+    assert [p.already_imported for p in again.photos] == [True, False, False]
+    assert len(again.new_photos) == 2
+
+
+def test_import_copies_into_one_dated_folder_without_overwriting(card, tmp_path):
+    pictures = tmp_path / "Pictures"
+    pictures.mkdir()
+    scan = find_photos(str(card))
+    source = scan.photos[0].path
+    os.chmod(source, stat.S_IREAD)  # cameras mark protected shots read-only
+    original_mtime = os.stat(source).st_mtime_ns
+    result = import_photos(scan.photos, str(pictures), "2026-10-27 EOS_DIGITAL")
+    assert result.folder == str(pictures / "2026-10-27 EOS_DIGITAL")
+    assert sorted(os.listdir(result.folder)) == ["IMG_0001 (2).JPG", "IMG_0001.JPG", "IMG_0002.JPG"]
+    copied = os.path.join(result.folder, "IMG_0001.JPG")
+    assert os.stat(copied).st_mtime_ns == original_mtime  # dates kept
+    assert os.access(copied, os.W_OK)  # but editable
+    assert os.path.exists(source)  # nothing on the card is touched
+    again = import_photos(scan.photos[:1], str(pictures), "2026-10-27 EOS_DIGITAL")
+    assert again.folder == str(pictures / "2026-10-27 EOS_DIGITAL (2)")  # a second import that day
+
+
+def test_stopping_leaves_no_partial_files(card, tmp_path):
+    scan = find_photos(str(card))
+    calls = iter([False, True])
+    result = import_photos(scan.photos, str(tmp_path), "Import", should_stop=lambda: next(calls, True))
+    assert result.stopped and len(result.copied) == 1
+    assert not [f for f in os.listdir(result.folder) if f.endswith(".part")]
+
+
+def test_a_missing_source_is_reported_and_the_rest_imported(card, tmp_path):
+    scan = find_photos(str(card))
+    os.remove(scan.photos[1].path)  # the card was pulled out mid-way, say
+    result = import_photos(scan.photos, str(tmp_path), "Import")
+    assert len(result.copied) == 2 and len(result.failed) == 1
+
+
+def test_folder_names():
+    assert default_folder_name("KINGSTON", datetime.date(2026, 10, 27)) == "2026-10-27 KINGSTON"
+    assert default_folder_name("My: Card", datetime.date(2026, 10, 27)) == "2026-10-27 My- Card"
+    assert safe_folder_name('a/b:c*d?') == "a-b-c-d-"
+    assert safe_folder_name("  ...  ") == "Import"
+    with pytest.raises(ValueError):
+        import_photos([], "/tmp", "bad/name")

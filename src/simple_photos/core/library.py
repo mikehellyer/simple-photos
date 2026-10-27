@@ -431,6 +431,11 @@ class Library:
     def all_tag_names(self) -> list[str]:
         return [row[0] for row in self._db.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE")]
 
+    def import_signatures(self) -> set[tuple[int, str]]:
+        """(file size, date taken) of every photo — how Import tells a
+        photo it has seen before."""
+        return {(row[0], row[1]) for row in self._db.execute("SELECT file_size, taken FROM photos")}
+
     # --- duplicates -----------------------------------------------------
 
     def duplicate_candidates(self, photo_ids: Optional[Iterable[int]] = None) -> list["Candidate"]:
