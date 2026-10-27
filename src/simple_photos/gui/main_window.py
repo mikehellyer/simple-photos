@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 from simple_photos import __version__
 from simple_photos.core.diagnostics import log_dir, log_event
 from simple_photos.core import autorotate
-from simple_photos.core.fileops import move_photos, rename_folder, reveal_in_file_manager
+from simple_photos.core.fileops import find_blank_folders, is_blank_folder, move_photos, rename_folder, reveal_in_file_manager
 from simple_photos.core.library import Library, PhotoFilter, ScanResult
 from simple_photos.core.self_update import download_asset, find_asset_for_this_platform, launch_installer
 from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
@@ -37,7 +37,7 @@ from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
 from simple_photos.core.thumbnails import ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
-from simple_photos.gui.folder_dialogs import MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
+from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
 from simple_photos.gui.info_panel import InfoPanel
 from simple_photos.gui.photo_grid import PhotoGrid, PhotoModel
 from simple_photos.gui.settings_dialog import SettingsDialog, normalise
@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
         self._sidebar.photos_dropped.connect(self._photos_dropped)
         self._sidebar.new_folder_requested.connect(self._new_folder)
         self._sidebar.rename_folder_requested.connect(self._rename_folder)
+        self._sidebar.delete_folder_requested.connect(self._delete_folder)
         self._sidebar.reveal_requested.connect(lambda folder: QDesktopServices.openUrl(QUrl.fromLocalFile(folder)))
         self._splitter.addWidget(self._sidebar)
 
@@ -220,6 +221,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         action(file_menu, "New Folder…", "Ctrl+Shift+N", lambda: self._new_folder(None))
         action(file_menu, "Rename Folder…", "F2", lambda: self._rename_folder(None))
+        action(file_menu, "Delete Empty Folders…", None, self._delete_empty_folders)
         action(file_menu, "Add Folder to Collection…", "Ctrl+O", self._add_folder)
         action(file_menu, "Look for New Photos", "F5", self.rescan)
         file_menu.addSeparator()
@@ -627,6 +629,57 @@ class MainWindow(QMainWindow):
         if self._rescan_after and self._scan_thread is None and not self._moving:
             self._rescan_after = False
             self.rescan()
+
+    def _delete_folder(self, folder: str) -> None:
+        """The sidebar's Delete Folder (only offered for empty folders)."""
+        if self._busy_with_files():
+            return
+        answer = QMessageBox.question(self, "Delete Folder", f"Move the empty folder “{os.path.basename(folder)}” to the Trash?")
+        if answer == QMessageBox.Yes:
+            self._trash_folders([folder])
+
+    def _delete_empty_folders(self) -> None:
+        if self._busy_with_files():
+            return
+        roots = list(self._settings.settings.collection_folders)
+        self._status.showMessage("Looking for empty folders…")
+        self._runner.run(lambda: find_blank_folders(roots), self._on_blank_folders_found, lambda error: self._on_blank_folders_found([]))
+
+    def _on_blank_folders_found(self, folders: list[str]) -> None:
+        self._status.clearMessage()
+        if not folders:
+            QMessageBox.information(self, "Delete Empty Folders", "There are no empty folders in your collection.")
+            return
+        dialog = DeleteFoldersDialog(folders, self)
+        if dialog.exec():
+            self._trash_folders(dialog.chosen())
+
+    def _trash_folders(self, folders: list[str]) -> None:
+        self._pause_scan()
+        trashed, kept = [], []
+        for folder in folders:
+            # Checked again now: something may have been saved there since.
+            if is_blank_folder(folder) and QFile.moveToTrash(folder):
+                self._library.forget_folder(folder)
+                trashed.append(folder)
+            else:
+                kept.append(folder)
+        selected = self._sidebar.selected_folder()
+        self._refresh_sidebar()
+        gone = next((f for f in trashed if selected and (selected == f or selected.startswith(f + os.sep))), None)
+        if gone:
+            self._sidebar.select_folder(os.path.dirname(gone))  # it went: show the folder it was in
+        self._reload_photos()
+        if kept:
+            QMessageBox.warning(
+                self,
+                "Delete Folder",
+                f"Moved {len(trashed):,} to the Trash, but {len(kept):,} couldn't be — "
+                f"e.g. {short_path(kept[0])} (it may have files in it now).",
+            )
+        else:
+            self._status.showMessage(f"Moved {len(trashed):,} empty folder{'s' if len(trashed) != 1 else ''} to the Trash", 6000)
+        self._rescan_if_pending()
 
     def _rename_folder(self, folder: str | None) -> None:
         folder = folder or self._sidebar.selected_folder()

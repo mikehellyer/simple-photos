@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTreeWidget,
@@ -168,3 +170,45 @@ class MoveToFolderDialog(QDialog):
     def accept(self) -> None:
         MoveToFolderDialog.last_destination = self.destination()
         super().accept()
+
+
+class DeleteFoldersDialog(QDialog):
+    """Review the empty folders found before they go to the Trash."""
+
+    def __init__(self, folders: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Delete Empty Folders")
+        self.resize(560, 460)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "These folders have nothing in them (or only files your computer leaves behind, like "
+            "Thumbs.db or .DS_Store). They'll go to the Trash, so they can be put back. "
+            "Folders with any other files in them, such as videos, are left alone."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self._list = QListWidget()
+        self._list.itemChanged.connect(self._update_button)
+        for folder in folders:
+            item = QListWidgetItem(short_path(folder))
+            item.setToolTip(folder)
+            item.setData(Qt.UserRole, folder)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            self._list.addItem(item)
+        layout.addWidget(self._list, 1)
+        self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        layout.addWidget(self._buttons)
+        self._update_button()
+
+    def chosen(self) -> list[str]:
+        items = (self._list.item(i) for i in range(self._list.count()))
+        return [item.data(Qt.UserRole) for item in items if item.checkState() == Qt.Checked]
+
+    def _update_button(self) -> None:
+        count = len(self.chosen())
+        ok = self._buttons.button(QDialogButtonBox.Ok)
+        ok.setText(f"Move {count:,} Folder{'s' if count != 1 else ''} to Trash")
+        ok.setEnabled(count > 0)

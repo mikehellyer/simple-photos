@@ -236,3 +236,12 @@ def test_refresh_files_rereads_a_changed_photo(library, collection):
     library.refresh_files([beach.path])
     photo = library.photo(beach.id)
     assert (photo.width, photo.height, photo.rating) == (30, 90, 3)
+
+
+def test_forget_folder(library, collection):
+    (collection / "Empty" / "Inner").mkdir(parents=True)
+    library.scan([collection])
+    library.forget_folder(str(collection / "Empty"))
+    counts = library.folder_counts()
+    assert str(collection / "Empty") not in counts and str(collection / "Empty" / "Inner") not in counts
+    assert library.count() == 3

@@ -64,6 +64,15 @@ Folder…**, or pick it and press **F2**. The photos inside keep their ratings,
 tags and captions. Renaming one of your collection folders updates Settings
 too.
 
+**Deleting empty folders.** Right-click an empty folder in the sidebar and
+choose **Delete Folder**, or use **File ▸ Delete Empty Folders…** to find
+them all at once and untick any you want to keep. A folder counts as empty
+only if it and its subfolders hold no files at all, apart from the clutter
+computers leave behind (`.DS_Store`, `Thumbs.db`, `desktop.ini`). A folder
+with anything else in it, even with no photos (a video, say), is never
+offered. Your collection folders themselves are never removed. Folders go
+to the Trash, so they can be put back.
+
 **Rotating.** **Rotate Left** (Ctrl+L) and **Rotate Right** (Ctrl+R) work on
 the selected photos, on the right-click menu and from the ⟲ ⟳ buttons in the
 viewer. Rotating never costs any quality:

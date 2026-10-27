@@ -67,6 +67,57 @@ def rename_folder(path: str, new_name: str) -> str:
     return target
 
 
+# Clutter operating systems leave in folders by themselves. A folder
+# holding only these still counts as blank.
+_JUNK_FILES = {".ds_store", "thumbs.db", "ehthumbs.db", "desktop.ini", ".directory"}
+
+
+def _is_junk(name: str) -> bool:
+    name = name.lower()
+    return name in _JUNK_FILES or name.startswith("._")
+
+
+def _blank_folders_below(root: str) -> dict[str, bool]:
+    """Every folder under root (root included) → whether it's blank: no
+    files in it or any folder below it, other than OS clutter. Anything
+    unreadable, and any link, counts as content — when unsure, keep."""
+    blank: dict[str, bool] = {}
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+        has_content = any(not _is_junk(name) for name in filenames)
+        has_content = has_content or any(
+            os.path.islink(os.path.join(dirpath, d)) or not blank.get(os.path.join(dirpath, d), False) for d in dirnames
+        )
+        blank[dirpath] = not has_content
+    return blank
+
+
+def is_blank_folder(path: str) -> bool:
+    path = os.path.normpath(path)
+    return os.path.isdir(path) and not os.path.islink(path) and _blank_folders_below(path).get(path, False)
+
+
+def find_blank_folders(roots: list[str]) -> list[str]:
+    """The blank folders under these collection folders — just the
+    topmost of each blank branch (deleting it takes the rest), never a
+    collection folder itself, and never a hidden one."""
+    found = []
+    for root in roots:
+        root = os.path.normpath(os.path.abspath(os.path.expanduser(root)))
+        if not os.path.isdir(root):
+            continue
+        blank = _blank_folders_below(root)
+        for folder, is_blank in blank.items():
+            parent = os.path.dirname(folder)
+            if (
+                is_blank
+                and folder != root
+                and not os.path.basename(folder).startswith(".")
+                and (parent == root or not blank.get(parent, False))
+            ):
+                found.append(folder)
+    return sorted(found, key=lambda f: [part.lower() for part in f.split(os.sep)])
+
+
 def free_name(folder: str, filename: str, taken: set[str] = frozenset()) -> str:
     """filename, or 'name (2).ext', 'name (3).ext'… — whichever doesn't
     already exist in folder (or in taken, names already claimed)."""

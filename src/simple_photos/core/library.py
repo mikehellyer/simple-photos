@@ -460,6 +460,15 @@ class Library:
             self._store(_norm(path), stat, exists=True, result=result)
         self._db.commit()
 
+    def forget_folder(self, path: str) -> None:
+        """A folder (and everything below it) has gone from disk."""
+        path = _norm(path)
+        params = (path, _like_prefix(path))
+        self._db.execute("DELETE FROM folders WHERE path = ? OR path LIKE ? ESCAPE '\\'", params)
+        self._db.execute("DELETE FROM photos WHERE folder = ? OR folder LIKE ? ESCAPE '\\'", params)
+        self._db.execute("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM photo_tags)")
+        self._db.commit()
+
     def relocate(self, moves: Iterable[tuple[str, str]]) -> None:
         """Photos moved on disk: (old path, new path) pairs. They keep
         their ratings, tags and captions."""

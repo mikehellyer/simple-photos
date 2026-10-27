@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from simple_photos.core.fileops import is_blank_folder
 from simple_photos.core.library import Library
 from simple_photos.gui.photo_grid import PHOTO_IDS_MIME
 
@@ -152,12 +153,14 @@ class Sidebar(QTabWidget):
     photos_dropped = Signal(list, str)  # photo ids, destination folder
     new_folder_requested = Signal(str)  # parent folder
     rename_folder_requested = Signal(str)  # folder
+    delete_folder_requested = Signal(str)  # an empty folder, to the Trash
     reveal_requested = Signal(str)  # folder
 
     def __init__(self, library: Library, parent=None):
         super().__init__(parent)
         self._library = library
         self._active = 0
+        self._roots: list[str] = []
 
         folders_page = QWidget()
         folders_layout = QVBoxLayout(folders_page)
@@ -217,6 +220,13 @@ class Sidebar(QTabWidget):
         menu = QMenu(self)
         new = menu.addAction("New Folder…", lambda: self.new_folder_requested.emit(folder))
         rename = menu.addAction("Rename Folder…", lambda: self.rename_folder_requested.emit(folder))
+        is_root = folder in {os.path.normpath(os.path.abspath(os.path.expanduser(r))) for r in self._roots}
+        deletable = not is_root and is_blank_folder(folder)
+        delete = menu.addAction(
+            "Delete Folder" if deletable else "Delete Folder (only when empty)",
+            lambda: self.delete_folder_requested.emit(folder),
+        )
+        delete.setEnabled(deletable)
         menu.addSeparator()
         reveal = menu.addAction("Show in File Manager", lambda: self.reveal_requested.emit(folder))
         if not os.path.isdir(folder):
@@ -229,6 +239,7 @@ class Sidebar(QTabWidget):
     def refresh(self, roots: list[str]) -> None:
         """Rebuild all three trees from the library, keeping what was
         selected and expanded. Doesn't emit scope_changed."""
+        self._roots = list(roots)
         total = self._library.count()
         for tree, fill in (
             (self._folders, lambda: self._fill_folders(roots, total)),
