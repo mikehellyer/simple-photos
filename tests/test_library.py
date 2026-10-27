@@ -259,3 +259,41 @@ def test_locations_and_filtering_by_ids(library, tmp_path):
     picked = library.query(PhotoFilter(ids=frozenset({ids["rome.jpg"], ids["home.jpg"]})))
     assert sorted(row.filename for row in picked) == ["home.jpg", "rome.jpg"]
     assert library.query(PhotoFilter(ids=frozenset())) == []
+
+
+def test_edits_dont_wait_for_a_scan(tmp_path, monkeypatch):
+    """A scan reading slow files (big RAWs, a USB drive) mustn't hold the
+    database locked meanwhile: the window saving a caption or rating
+    froze until the scan's batch was done."""
+    import threading
+    import time
+
+    import simple_photos.core.library as library_module
+
+    root = tmp_path / "p"
+    make_photo(root / "first.jpg")
+    ui = Library(tmp_path / "lib.db")
+    ui.scan([root])
+    photo_id = ui.query(PhotoFilter())[0].id
+    for i in range(40):
+        make_photo(root / "new" / f"{i}.jpg", size=(8, 8))
+    real = library_module.read_photo_info
+    monkeypatch.setattr(library_module, "read_photo_info", lambda path: (time.sleep(0.02), real(path))[1])
+
+    def scan():
+        other = Library(tmp_path / "lib.db")
+        other.scan([root])
+        other.close()
+
+    worker = threading.Thread(target=scan)
+    worker.start()
+    time.sleep(0.2)  # well into the scan's first batch
+    waits = []
+    while worker.is_alive():
+        start = time.monotonic()
+        ui.set_caption([photo_id], "hello")
+        waits.append(time.monotonic() - start)
+        time.sleep(0.05)
+    worker.join()
+    assert waits and max(waits) < 0.25
+    assert ui.count() == 41

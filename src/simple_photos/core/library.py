@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS fingerprints (
 );
 """
 
-SCAN_BATCH = 200  # photos read between commits (and progress reports)
+SCAN_BATCH = 200  # most photos read between writes (and progress reports)
+WRITE_EVERY_SECONDS = 1.0  # …or at least this often, so progress keeps showing
 
 SORTS = {
     "taken": "taken {dir}, filename COLLATE NOCASE",
@@ -193,10 +194,25 @@ class Library:
         seen_folders: set[str] = set()
         available_roots = [r for r in roots if os.path.isdir(r)]
         count = 0
+        # Photos read but not yet written. Reading (slow: big RAW files, a
+        # USB drive) happens with the database unlocked; each batch is then
+        # written in one quick transaction. Holding the write lock while
+        # reading froze the window whenever it saved a caption or rating.
+        pending: list[tuple[dict, bool]] = []
+        last_write = time.monotonic()
+
+        def write_pending() -> None:
+            nonlocal pending, last_write
+            for values, exists in pending:
+                self._write(values, exists, result)
+            self._db.commit()
+            pending = []
+            last_write = time.monotonic()
+
         for root in available_roots:
             for dirpath, dirnames, filenames in os.walk(root):
                 if should_stop and should_stop():
-                    self._db.commit()
+                    write_pending()
                     return result
                 dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
                 seen_folders.add(dirpath)
@@ -204,7 +220,7 @@ class Library:
                     if not is_photo_file(name):
                         continue
                     if should_stop and should_stop():
-                        self._db.commit()
+                        write_pending()
                         return result
                     path = os.path.join(dirpath, name)
                     try:
@@ -215,12 +231,13 @@ class Library:
                     previous = known.get(path)
                     if previous == (stat.st_size, stat.st_mtime):
                         continue
-                    self._store(path, stat, exists=previous is not None, result=result)
+                    pending.append((self._read(path, stat, result), previous is not None))
                     count += 1
-                    if count % SCAN_BATCH == 0:
-                        self._db.commit()
+                    if len(pending) >= SCAN_BATCH or time.monotonic() - last_write >= WRITE_EVERY_SECONDS:
+                        write_pending()
                         if progress:
                             progress(count, dirpath)
+        write_pending()
 
         gone = [
             path
@@ -249,6 +266,11 @@ class Library:
         self._db.executemany("INSERT OR IGNORE INTO folders (path) VALUES (?)", [(path,) for path in seen - known])
 
     def _store(self, path: str, stat: os.stat_result, exists: bool, result: ScanResult) -> None:
+        self._write(self._read(path, stat, result), exists, result)
+
+    @staticmethod
+    def _read(path: str, stat: os.stat_result, result: ScanResult) -> dict:
+        """A photo's row, read from its file. Touches no database."""
         try:
             info = read_photo_info(path)
         except Exception:  # not really an image, or truncated — still list it
@@ -262,6 +284,10 @@ class Library:
             file_size=stat.st_size,
             file_mtime=stat.st_mtime,
         )
+        return values
+
+    def _write(self, values: dict, exists: bool, result: ScanResult) -> None:
+        path = values["path"]
         if exists:
             assignments = ", ".join(f"{name} = :{name}" for name in values if name != "path")
             self._db.execute(f"UPDATE photos SET {assignments} WHERE path = :path", values)
