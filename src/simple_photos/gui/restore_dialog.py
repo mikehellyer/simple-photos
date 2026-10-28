@@ -29,14 +29,19 @@ class RestoreDialog(QDialog):
         self._list = QListWidget()
         for plan in plans:
             where = short_path(plan.target) + ("" if plan.matched else " (a new folder)")
-            parts = [f"{len(plan.to_copy):,} missing ({format_size(plan.bytes_to_copy)})" if plan.to_copy else "nothing missing"]
+            missing = "deleted from this computer" if plan.removed else "missing"
+            parts = [f"{len(plan.to_copy):,} {missing} ({format_size(plan.bytes_to_copy)})" if plan.to_copy else "nothing missing"]
             if plan.already_here:
                 parts.append(f"{plan.already_here:,} already here")
+            if plan.elsewhere:
+                parts.append(f"{plan.elsewhere:,} here in another folder (not copied again)")
             if plan.different:
                 parts.append(f"{plan.different:,} different here (kept)")
-            item = QListWidgetItem(f"{plan.name} → {where}: {', '.join(parts)}")
+            label = f"Removed from computer: {plan.name}" if plan.removed else plan.name
+            item = QListWidgetItem(f"{label} → {where}: {', '.join(parts)}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)
+            # What was put aside after being deleted here isn't brought back unless asked.
+            item.setCheckState(Qt.Unchecked if plan.removed else Qt.Checked)
             item.setData(Qt.UserRole, plan)
             self._list.addItem(item)
         self._list.setMaximumHeight(max(60, 26 * len(plans) + 8))

@@ -6,7 +6,7 @@ import datetime as _dt
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QVBoxLayout
 
-from simple_photos.core.backup import BACKUP_FOLDER, FileToCopy, FolderPlan
+from simple_photos.core.backup import BACKUP_FOLDER, REMOVED_FOLDER, FileToCopy, FolderPlan, Move
 from simple_photos.core.metadata import format_size
 from simple_photos.gui.folder_dialogs import short_path
 
@@ -31,7 +31,8 @@ class BackupDialog(QDialog):
 
         intro = QLabel(
             f"Your collection folders are backed up to <b>{name}</b>, into “{BACKUP_FOLDER}”. "
-            "Only new or changed files are copied, and nothing is ever deleted from the backup."
+            "Only new or changed files are copied, and moves and renames are followed. Nothing you've "
+            "backed up is ever deleted from it."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -41,10 +42,13 @@ class BackupDialog(QDialog):
 
         self._list = QListWidget()
         for plan in plans:
+            parts = []
             if plan.to_copy:
-                detail = f"{len(plan.to_copy):,} to copy ({format_size(plan.bytes_to_copy)}), {plan.up_to_date:,} already backed up"
-            else:
-                detail = f"up to date ({plan.up_to_date:,} files)"
+                parts.append(f"{len(plan.to_copy):,} to copy ({format_size(plan.bytes_to_copy)})")
+            if plan.moves:
+                parts.append(f"{len(plan.moves):,} moved or renamed (rearranged in the backup, no copying)")
+            parts.append(f"{plan.up_to_date:,} already backed up" if parts else f"up to date ({plan.up_to_date:,} files)")
+            detail = ", ".join(parts)
             item = QListWidgetItem(f"{short_path(plan.root)} — {detail}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)
@@ -58,6 +62,31 @@ class BackupDialog(QDialog):
         self._library.setChecked(True)
         self._library.toggled.connect(self._update)
         layout.addWidget(self._library)
+
+        removed = sum(len(p.removed) for p in plans)
+        leftovers = sum(len(p.leftovers) for p in plans)
+        tidy_parts = []
+        if removed:
+            tidy_parts.append(
+                f"put the {removed:,} file{'s' if removed != 1 else ''} you've deleted from this computer into "
+                f"“{REMOVED_FOLDER}” (kept there, not deleted)"
+            )
+        if leftovers:
+            tidy_parts.append(
+                f"remove {leftovers:,} leftover cop{'ies' if leftovers != 1 else 'y'} from earlier backups "
+                "(the same files are backed up at their current places)"
+            )
+        self._tidy = QCheckBox("Tidy up the backup")
+        self._tidy.setVisible(bool(tidy_parts))
+        self._tidy.setChecked(False)
+        self._tidy.toggled.connect(self._update)
+        layout.addWidget(self._tidy)
+        sentence = " and ".join(tidy_parts)
+        tidy_note = QLabel(sentence[:1].upper() + sentence[1:] + "." if tidy_parts else "")
+        tidy_note.setWordWrap(True)
+        tidy_note.setStyleSheet("color: palette(mid); margin-left: 22px;")
+        tidy_note.setVisible(bool(tidy_parts))
+        layout.addWidget(tidy_note)
 
         self._summary = QLabel()
         self._summary.setWordWrap(True)
@@ -76,6 +105,19 @@ class BackupDialog(QDialog):
     def save_library(self) -> bool:
         return self._library.isChecked()
 
+    def _chosen(self) -> list[FolderPlan]:
+        items = (self._list.item(i) for i in range(self._list.count()))
+        return [item.data(Qt.UserRole) for item in items if item.checkState() == Qt.Checked]
+
+    def chosen_plans(self) -> list[FolderPlan]:
+        return self._chosen()
+
+    def moves(self) -> list[Move]:
+        return [m for plan in self._chosen() for m in plan.moves]
+
+    def tidy(self) -> bool:
+        return self._tidy.isVisible() and self._tidy.isChecked()
+
     def _update(self) -> None:
         files = self.files()
         needed = sum(f.size for f in files)
@@ -91,6 +133,10 @@ class BackupDialog(QDialog):
         elif files:
             self._summary.setText(f"{len(files):,} file{'s' if len(files) != 1 else ''} to copy ({format_size(needed)}).{room}")
             ok.setText(f"Back Up {len(files):,} File{'s' if len(files) != 1 else ''}")
+            ok.setEnabled(True)
+        elif self.moves() or self.tidy():
+            self._summary.setText("Nothing needs copying — the backup just needs rearranging." + room)
+            ok.setText("Update Backup")
             ok.setEnabled(True)
         else:
             self._summary.setText("Everything ticked is already backed up." + room)

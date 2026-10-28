@@ -1401,13 +1401,20 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         files, save_library = dialog.files(), dialog.save_library()
+        moves, tidy, chosen = dialog.moves(), dialog.tidy(), dialog.chosen_plans()
         roots = [plan.root for plan in plans]
         db_path = self._library.db_path
         total_mb = max(1, sum(f.size for f in files) // 1_000_000)
 
         def job(worker: ScanWorker, cancel):
+            # Moves and renames first: quick, within the drive. Any that can't
+            # be done (something's in the way) are copied afresh instead.
+            if moves:
+                worker.progress.emit(0, "0\tRearranging the backup to match moves and renames…")
+            moved, could_not = backup.run_moves(moves)
+            files_now = files + [backup.FileToCopy(m.source, m.new, m.size) for m in could_not]
             result = backup.run_backup(
-                files,
+                files_now,
                 # In megabytes: a progress bar can't count billions of bytes.
                 progress=lambda done, total: worker.progress.emit(
                     done // 1_000_000, f"{total_mb}\tBacking up… {format_size(done)} of {format_size(total)}"
@@ -1417,6 +1424,10 @@ class MainWindow(QMainWindow):
             if save_library and not result.stopped:
                 result.library_saved = backup.save_library(db_path, destination)
             backup.write_manifest(roots, destination)  # so a restore can match folders up
+            result.moved = moved
+            result.tidied = backup.tidy_up(chosen, destination) if tidy and not result.stopped else None
+            root = backup.backup_root(destination)
+            backup.prune_empty_folders(root, keep=[os.path.join(root, backup.REMOVED_FOLDER)])  # old places left empty
             return result
 
         self._start_background_check(
@@ -1444,12 +1455,23 @@ class MainWindow(QMainWindow):
                 **self._settings.settings.last_backups, name: _dt.datetime.now().isoformat(timespec="minutes")
             }
             self._settings.save()
+            done = []
             if result.copied:
-                library = " and your ratings, tags and captions" if result.library_saved else ""
-                message = f"Backed up {result.copied:,} new or changed file{'s' if result.copied != 1 else ''} ({size}){library} to {name}"
+                done.append(f"copied {result.copied:,} new or changed file{'s' if result.copied != 1 else ''} ({size})")
+            if result.moved:
+                done.append(f"followed {result.moved:,} move{'s' if result.moved != 1 else ''} and rename{'s' if result.moved != 1 else ''}")
+            tidied = result.tidied
+            if tidied and tidied.put_aside:
+                done.append(f"put {tidied.put_aside:,} deleted file{'s' if tidied.put_aside != 1 else ''} aside")
+            if tidied and tidied.leftovers_removed:
+                done.append(f"removed {tidied.leftovers_removed:,} leftover cop{'ies' if tidied.leftovers_removed != 1 else 'y'}")
+            if done:
+                message = f"Backup on {name}: " + ", ".join(done)
             else:
-                message = f"{name} was already up to date" + (" — saved your ratings, tags and captions" if result.library_saved else "")
-            self._status.showMessage(message, 10000)
+                message = f"{name} was already up to date"
+            if result.library_saved:
+                message += " — ratings, tags and captions saved"
+            self._status.showMessage(message, 12000)
         if save_library and not result.library_saved:
             QMessageBox.warning(self, "Back Up", f"The photos were backed up, but the copy of your ratings and tags couldn't be saved on {name}.")
 

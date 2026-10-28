@@ -88,8 +88,19 @@ network folder).
 - **Your ratings, tags and captions** are saved alongside as
   `Simple-Photos library.db`. They live in Simple-Photos' library, not in the
   photos, so a backup without them would lose them.
-- **Nothing is ever deleted from the backup.** A photo you delete from your
-  computer keeps its backed-up copy.
+- **Moves and renames are followed.** If you move photos or rename a folder,
+  the next backup rearranges its copies to match, within the drive, instead
+  of copying them again. A file counts as moved when it matches a backed-up
+  file that's no longer at its old place, by size, date and content.
+- **Nothing you've backed up is ever deleted from it.** A photo you delete
+  from your computer keeps its backed-up copy.
+- **Tidy up the backup** (off unless you tick it, offered when there's
+  something to tidy):
+  - files you've deleted from your computer are put aside in `Removed from
+    computer` inside the backup, still kept;
+  - leftover copies from backups made before moves were followed (old folder
+    names) are removed, but only ones identical to a file the backup keeps at
+    its current place.
 - Copies keep their dates, and a stopped backup never leaves half a file. USB
   drives' time quirks (2-second precision, an hour out after a clock change)
   don't make files look changed.
@@ -101,7 +112,9 @@ folder, how many files are missing here, how many are already here, and how
 many are different here.
 
 - **Only missing files are copied back.** Nothing on this computer is ever
-  overwritten or deleted. Where a file is different here, this computer's
+  overwritten or deleted. A photo that's here but in another folder (moved
+  since the backup) isn't brought back a second time. Files in the backup's
+  `Removed from computer` are listed too, but not ticked. Where a file is different here, this computer's
   version is kept. This covers bringing back photos deleted by mistake, and
   filling a new computer.
 - Each backed-up folder goes back into the collection folder of the same name

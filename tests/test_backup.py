@@ -116,3 +116,112 @@ def test_library_snapshot(tmp_path, setup):
     saved = sqlite3.connect(usb / "Simple-Photos Backup" / "Simple-Photos library.db")
     assert saved.execute("SELECT name FROM tags").fetchall() == [("Holiday",)]
     assert backup.free_space(str(usb)) > 0
+
+
+# --- following moves and renames ---------------------------------------------
+
+
+def do_backup(pictures, usb, tidy=False):
+    plans = backup.plan_backup([str(pictures)], str(usb))
+    moved, could_not = backup.run_moves([m for p in plans for m in p.moves])
+    files = everything(plans) + [backup.FileToCopy(m.source, m.new, m.size) for m in could_not]
+    result = backup.run_backup(files)
+    tidied = backup.tidy_up(plans, str(usb)) if tidy else None
+    backup.prune_empty_folders(backup.backup_root(str(usb)), keep=[os.path.join(backup.backup_root(str(usb)), backup.REMOVED_FOLDER)])
+    return plans, moved, result, tidied
+
+
+def backed_up_files(usb):
+    root = usb / "Simple-Photos Backup"
+    return sorted(os.path.relpath(os.path.join(d, f), root) for d, _, fs in os.walk(root) for f in fs if not f.endswith((".db", ".json")))
+
+
+def test_a_renamed_folder_is_moved_in_the_backup_not_copied_again(setup):
+    pictures, usb = setup
+    do_backup(pictures, usb)
+    os.rename(pictures / "2024" / "Rome", pictures / "2024" / "Rome trip")
+    plans, moved, result, _ = do_backup(pictures, usb)
+    assert (moved, result.copied, len(plans[0].removed), len(plans[0].leftovers)) == (3, 0, 0, 0)
+    assert backed_up_files(usb) == [
+        os.path.join("Pictures", "2024", "Rome trip", name) for name in ("a.jpg", "b.jpg", "clip.mp4")
+    ]  # and the old, now empty, Rome folder is gone from the backup
+    assert everything(backup.plan_backup([str(pictures)], str(usb))) == []
+
+
+def test_a_moved_and_a_renamed_photo_are_followed(setup):
+    pictures, usb = setup
+    do_backup(pictures, usb)
+    (pictures / "Best").mkdir()
+    os.rename(pictures / "2024" / "Rome" / "a.jpg", pictures / "Best" / "a.jpg")
+    os.rename(pictures / "2024" / "Rome" / "b.jpg", pictures / "2024" / "Rome" / "Colosseum.jpg")
+    plans, moved, result, _ = do_backup(pictures, usb)
+    assert (moved, result.copied) == (2, 0)
+    assert os.path.join("Pictures", "Best", "a.jpg") in backed_up_files(usb)
+    assert os.path.join("Pictures", "2024", "Rome", "Colosseum.jpg") in backed_up_files(usb)
+
+
+def test_an_edited_and_moved_photo_is_copied_and_its_old_copy_kept(setup):
+    pictures, usb = setup
+    do_backup(pictures, usb)
+    (pictures / "Edited").mkdir()
+    os.rename(pictures / "2024" / "Rome" / "a.jpg", pictures / "Edited" / "a.jpg")
+    with open(pictures / "Edited" / "a.jpg", "ab") as f:
+        f.write(b"edited")
+    plans, moved, result, _ = do_backup(pictures, usb)
+    assert (moved, result.copied) == (0, 1)
+    assert plans[0].removed == [str(usb / "Simple-Photos Backup" / "Pictures" / "2024" / "Rome" / "a.jpg")]
+    assert os.path.join("Pictures", "2024", "Rome", "a.jpg") in backed_up_files(usb)  # not tidied: kept where it was
+
+
+def test_tidying_puts_deleted_photos_aside_and_keeps_them(setup):
+    pictures, usb = setup
+    do_backup(pictures, usb)
+    os.remove(pictures / "2024" / "Rome" / "b.jpg")
+    _, _, _, tidied = do_backup(pictures, usb, tidy=True)
+    assert (tidied.put_aside, tidied.leftovers_removed) == (1, 0)
+    assert os.path.join("Removed from computer", "Pictures", "2024", "Rome", "b.jpg") in backed_up_files(usb)
+    assert os.path.join("Pictures", "2024", "Rome", "b.jpg") not in backed_up_files(usb)
+    again = backup.plan_backup([str(pictures)], str(usb))
+    assert (everything(again), again[0].removed, again[0].moves) == ([], [], [])  # the Removed folder is left alone
+
+
+def test_tidying_clears_leftovers_from_older_backups(setup):
+    """Backups made before moves were followed copied a renamed folder
+    again and kept the old one: tidying removes the old copies — each
+    identical to a file still backed up at its current place."""
+    pictures, usb = setup
+    do_backup(pictures, usb)
+    os.rename(pictures / "2024" / "Rome", pictures / "2024" / "Roma")
+    import shutil
+
+    shutil.copytree(usb / "Simple-Photos Backup" / "Pictures" / "2024" / "Rome", usb / "Simple-Photos Backup" / "Pictures" / "2024" / "Roma")
+    plans = backup.plan_backup([str(pictures)], str(usb))
+    assert (len(plans[0].moves), len(plans[0].leftovers), len(plans[0].removed)) == (0, 3, 0)
+    _, _, _, tidied = do_backup(pictures, usb, tidy=True)
+    assert (tidied.put_aside, tidied.leftovers_removed) == (0, 3)
+    assert backed_up_files(usb) == [os.path.join("Pictures", "2024", "Roma", n) for n in ("a.jpg", "b.jpg", "clip.mp4")]
+
+
+def test_same_content_reads_only_the_ends(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    data = bytes(range(256)) * 2000  # 512 KB
+    a.write_bytes(data)
+    b.write_bytes(data)
+    assert backup.same_content(str(a), str(b))
+    b.write_bytes(data[:-1] + b"\x00")
+    assert not backup.same_content(str(a), str(b))
+    b.write_bytes(data[:10])
+    assert not backup.same_content(str(a), str(b))
+
+
+def test_a_move_that_cant_be_done_is_copied_from_the_computer_instead(setup):
+    pictures, usb = setup
+    do_backup(pictures, usb)
+    os.rename(pictures / "2024" / "Rome" / "a.jpg", pictures / "2024" / "Rome" / "z.jpg")
+    plans = backup.plan_backup([str(pictures)], str(usb))
+    (move,) = plans[0].moves
+    assert move.source == str(pictures / "2024" / "Rome" / "z.jpg")
+    with open(move.new, "w") as blocker:  # something in the way
+        blocker.write("x")
+    moved, could_not = backup.run_moves([move])
+    assert (moved, could_not) == (0, [move])

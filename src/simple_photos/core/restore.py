@@ -3,7 +3,10 @@
 Only files missing from the computer are copied back: nothing there is
 ever overwritten or deleted, so a restore can't lose anything. That
 covers both bringing back photos deleted by mistake and filling a new
-computer.
+computer. A photo that's here but in another folder (moved since the
+backup) isn't brought back a second time. What the backup put aside in
+"Removed from computer" is offered too, but not ticked to start with —
+it was deleted on purpose.
 
 Each folder in the backup goes back into the collection folder with the
 same name ("Pictures" → your Pictures); one with no match goes inside
@@ -22,7 +25,16 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
 
-from simple_photos.core.backup import LIBRARY_COPY, MANIFEST, FileToCopy, backup_root, folder_names, same_file
+from simple_photos.core.backup import (
+    LIBRARY_COPY,
+    MANIFEST,
+    REMOVED_FOLDER,
+    FileToCopy,
+    backup_root,
+    folder_names,
+    same_content,
+    same_file,
+)
 
 
 @dataclass
@@ -33,7 +45,9 @@ class RestorePlan:
     matched: bool  # target is the collection folder of the same name
     to_copy: list[FileToCopy] = field(default_factory=list)
     already_here: int = 0
+    elsewhere: int = 0  # here too, but in another folder (moved since the backup): not copied
     different: int = 0  # here too, but not the same: the computer's version is kept
+    removed: bool = False  # from "Removed from computer": deleted here on purpose, so not ticked to start with
 
     @property
     def bytes_to_copy(self) -> int:
@@ -54,6 +68,25 @@ def _skip(name: str) -> bool:
     return name.startswith(".") or name.endswith(".part")
 
 
+def _computer_index(roots: list[str]) -> dict[int, list[tuple[str, os.stat_result]]]:
+    """Every file in the collection, by size — to spot a backed-up photo
+    that's still here, just in another folder."""
+    index: dict[int, list[tuple[str, os.stat_result]]] = {}
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not _skip(d)]
+            for filename in filenames:
+                if _skip(filename):
+                    continue
+                path = os.path.join(dirpath, filename)
+                try:
+                    info = os.stat(path)
+                except OSError:
+                    continue
+                index.setdefault(info.st_size, []).append((path, info))
+    return index
+
+
 def plan_restore(
     backup_dir: str,
     roots: list[str],
@@ -62,11 +95,15 @@ def plan_restore(
 ) -> list[RestorePlan]:
     roots = [os.path.normpath(os.path.abspath(r)) for r in roots]
     by_name = {name.lower(): root for root, name in folder_names(roots).items()}
+    here = _computer_index(roots)
+    sources = [(name, os.path.join(backup_dir, name), False) for name in sorted(os.listdir(backup_dir))]
+    removed_dir = os.path.join(backup_dir, REMOVED_FOLDER)
+    if os.path.isdir(removed_dir):
+        sources += [(name, os.path.join(removed_dir, name), True) for name in sorted(os.listdir(removed_dir))]
     plans = []
     found = 0
-    for name in sorted(os.listdir(backup_dir)):
-        source = os.path.join(backup_dir, name)
-        if _skip(name) or not os.path.isdir(source):
+    for name, source, removed in sources:
+        if _skip(name) or not os.path.isdir(source) or (not removed and name == REMOVED_FOLDER):
             continue
         root = by_name.get(name.lower())
         plan = RestorePlan(
@@ -74,6 +111,7 @@ def plan_restore(
             source=source,
             target=root or os.path.join(roots[0], name),
             matched=root is not None,
+            removed=removed,
         )
         plans.append(plan)
         for dirpath, dirnames, filenames in os.walk(source):
@@ -91,14 +129,20 @@ def plan_restore(
                 except OSError:
                     continue
                 try:
-                    here = os.stat(target)
+                    at_target = os.stat(target)
                 except OSError:
+                    if any(
+                        same_file(backed_up_stat, info) and same_content(backed_up, path)
+                        for path, info in here.get(backed_up_stat.st_size, [])
+                    ):
+                        plan.elsewhere += 1  # moved since the backup: don't bring back a second copy
+                        continue
                     plan.to_copy.append(FileToCopy(backed_up, target, backed_up_stat.st_size))
                     found += 1
                     if progress and found % 50 == 0:
                         progress(found)
                     continue
-                if same_file(backed_up_stat, here):
+                if same_file(backed_up_stat, at_target):
                     plan.already_here += 1
                 else:
                     plan.different += 1

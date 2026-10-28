@@ -151,3 +151,25 @@ def test_restore_never_replaces_a_file_that_appeared_meanwhile(tmp_path):
     result = backup.run_backup([backup.FileToCopy(str(source), str(target), 15)], replace=False)
     assert (result.copied, result.skipped) == (0, 1)
     assert target.read_text() == "made since"
+
+
+def test_a_photo_moved_since_the_backup_isnt_brought_back_twice(computer):
+    pictures, db, usb = computer
+    usb.mkdir()
+    back_up([str(pictures)], usb, db)
+    (pictures / "Favourites").mkdir()
+    os.rename(pictures / "2024" / "a.jpg", pictures / "Favourites" / "a.jpg")
+    plans = restore.plan_restore(restore.find_backup(str(usb)), [str(pictures)])
+    assert (plans[0].elsewhere, plans[0].to_copy) == (1, [])
+
+
+def test_photos_put_aside_by_tidying_are_offered_but_not_ticked(computer):
+    pictures, db, usb = computer
+    usb.mkdir()
+    back_up([str(pictures)], usb, db)
+    os.remove(pictures / "2024" / "b.jpg")
+    plans = backup.plan_backup([str(pictures)], str(usb))
+    backup.tidy_up(plans, str(usb))
+    plans = restore.plan_restore(restore.find_backup(str(usb)), [str(pictures)])
+    assert [(p.name, p.removed, len(p.to_copy)) for p in plans] == [("Pictures", False, 0), ("Pictures", True, 1)]
+    assert plans[1].to_copy[0].target == str(pictures / "2024" / "b.jpg")  # back where it was
