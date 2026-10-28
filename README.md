@@ -94,6 +94,30 @@ network folder).
   drives' time quirks (2-second precision, an hour out after a clock change)
   don't make files look changed.
 
+**Restoring from a backup.** **File ▸ Restore From Backup ▸** lists the
+plugged-in drives that hold a Simple-Photos backup, plus **Other Folder…**.
+It compares the backup with this computer and shows, for each backed-up
+folder, how many files are missing here, how many are already here, and how
+many are different here.
+
+- **Only missing files are copied back.** Nothing on this computer is ever
+  overwritten or deleted. Where a file is different here, this computer's
+  version is kept. This covers bringing back photos deleted by mistake, and
+  filling a new computer.
+- Each backed-up folder goes back into the collection folder of the same name
+  (the backup's `Pictures` → your Pictures). One with no match goes inside
+  your first collection folder, under its own name.
+- **Ratings, tags and captions** come back from the backup's copy of the
+  library and are added to what's here: a photo gets the backup's rating only
+  if it has none, tags are combined, and a caption only fills an empty one.
+  This also works for photos that never went missing, e.g. after
+  reinstalling. It works across computers, even between Windows, macOS and
+  Linux.
+
+Simple-Photos' backup doesn't use rsync. rsync isn't on Windows, and macOS's
+is old. It uses the same idea, comparing size and date, so only new or
+changed files are copied, and it allows for USB drives' time quirks.
+
 **Browsing.** The sidebar has three ways in:
 
 - **Folders**: your folder tree, with photo counts. Tick or untick *Include
@@ -313,6 +337,7 @@ pytest
   - `geo.py`: map maths, pin grouping and OpenStreetMap tiles
   - `devices.py` and `importer.py`: spotting plugged-in devices, and importing from them
   - `backup.py`: backing up the collection (and library) to a drive
+  - `restore.py`: restoring missing files, and ratings and tags, from a backup
   - settings, diagnostics and the update checker
 - `src/simple_photos/gui/`: the PySide6 window, including the sidebar, grid,
   info panel and viewer.

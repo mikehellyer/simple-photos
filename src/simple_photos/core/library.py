@@ -623,6 +623,34 @@ class Library:
         self._db.commit()
         return new_ids
 
+    def add_backed_up_info(self, entries) -> int:
+        """Restore ratings, tags and captions (restore.BackedUpInfo), adding
+        to what's here: a rating only where there's none, a caption only
+        where there's none, tags combined. How many photos gained anything."""
+        changed = 0
+        for entry in entries:
+            row = self._db.execute(
+                "SELECT id, rating, caption FROM photos WHERE path = ?", (_norm(entry.path),)
+            ).fetchone()
+            if row is None:
+                continue
+            photo_id, rating, caption = row
+            before = self._db.total_changes
+            if not rating and entry.rating:
+                self._db.execute("UPDATE photos SET rating = ? WHERE id = ?", (entry.rating, photo_id))
+            if not caption and entry.caption:
+                self._db.execute("UPDATE photos SET caption = ? WHERE id = ?", (entry.caption, photo_id))
+            for name in entry.tags:
+                self._db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+                self._db.execute(
+                    "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id) SELECT ?, id FROM tags WHERE name = ?",
+                    (photo_id, name),
+                )
+            if self._db.total_changes - before > 0:
+                changed += 1
+        self._db.commit()
+        return changed
+
     def relocate(self, moves: Iterable[tuple[str, str]]) -> None:
         """Photos moved on disk: (old path, new path) pairs. They keep
         their ratings, tags and captions."""

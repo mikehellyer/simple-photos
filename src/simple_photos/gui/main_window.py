@@ -45,9 +45,10 @@ from simple_photos.core.settings import THUMB_MAX, THUMB_MIN, SettingsStore
 from simple_photos.core.rotation import RotateError, can_rotate, rotate_photo
 from simple_photos.core.thumbnails import copy_thumbnail, ensure_thumbnail, move_thumbnail, thumbnail_path
 from simple_photos.core.updater import API_TIMEOUT_SECONDS, check_for_update
-from simple_photos.core import backup, duplicates, importer, raw
+from simple_photos.core import backup, duplicates, importer, raw, restore
 from simple_photos.gui.autorotate_dialog import AutoRotateDialog
 from simple_photos.gui.backup_dialog import BackupDialog
+from simple_photos.gui.restore_dialog import RestoreDialog
 from simple_photos.gui.duplicates_dialog import DuplicatesDialog, FindDuplicatesDialog
 from simple_photos.gui.folder_dialogs import DeleteFoldersDialog, MoveToFolderDialog, ask_folder_rename, make_new_folder, short_path
 from simple_photos.gui.import_widgets import DevicesPanel, DeviceWatcher, ImportDialog
@@ -279,6 +280,8 @@ class MainWindow(QMainWindow):
         self._import_menu.aboutToShow.connect(self._fill_import_menu)
         self._backup_menu = file_menu.addMenu("Back Up To")
         self._backup_menu.aboutToShow.connect(self._fill_backup_menu)
+        self._restore_menu = file_menu.addMenu("Restore From Backup")
+        self._restore_menu.aboutToShow.connect(self._fill_restore_menu)
         file_menu.addSeparator()
         action(file_menu, "New Folder…", "Ctrl+Shift+N", lambda: self._new_folder(None))
         action(file_menu, "Rename Folder…", "F2", lambda: self._rename_folder(None))
@@ -1398,6 +1401,7 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         files, save_library = dialog.files(), dialog.save_library()
+        roots = [plan.root for plan in plans]
         db_path = self._library.db_path
         total_mb = max(1, sum(f.size for f in files) // 1_000_000)
 
@@ -1412,6 +1416,7 @@ class MainWindow(QMainWindow):
             )
             if save_library and not result.stopped:
                 result.library_saved = backup.save_library(db_path, destination)
+            backup.write_manifest(roots, destination)  # so a restore can match folders up
             return result
 
         self._start_background_check(
@@ -1447,6 +1452,123 @@ class MainWindow(QMainWindow):
             self._status.showMessage(message, 10000)
         if save_library and not result.library_saved:
             QMessageBox.warning(self, "Back Up", f"The photos were backed up, but the copy of your ratings and tags couldn't be saved on {name}.")
+
+    # --- restoring ------------------------------------------------------
+
+    def _fill_restore_menu(self) -> None:
+        self._devices.check()
+        menu = self._restore_menu
+        menu.clear()
+        with_backups = [d for d in self._devices.devices if d.kind == "drive" and restore.find_backup(d.path)]
+        for device in with_backups:
+            menu.addAction(device.description, lambda device=device: self._restore_from(device.path, device.name))
+        if not with_backups:
+            none = menu.addAction("No plugged-in drive has a Simple-Photos backup")
+            none.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Other Folder…", self._restore_from_folder)
+
+    def _restore_from_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Restore From (the drive or folder with the backup)")
+        if folder:
+            self._restore_from(folder, os.path.basename(os.path.normpath(folder)) or folder)
+
+    def _restore_from(self, location: str, name: str) -> None:
+        if self._auto_thread is not None or self._busy_with_files():
+            return
+        backup_dir = restore.find_backup(location)
+        if backup_dir is None:
+            QMessageBox.information(
+                self, "Restore", f"There's no “{backup.BACKUP_FOLDER}” folder on {name} — it doesn't hold a Simple-Photos backup."
+            )
+            return
+        roots = [normalise(r) for r in self._settings.settings.collection_folders if os.path.isdir(normalise(r))]
+        if not roots:
+            QMessageBox.information(self, "Restore", "Add a folder to your collection first (File ▸ Add Folder to Collection…) — that's where the photos go back to.")
+            return
+
+        def job(worker: ScanWorker, cancel):
+            return restore.plan_restore(
+                backup_dir,
+                roots,
+                progress=lambda found: worker.progress.emit(found, f"0\tComparing with the backup… {found:,} missing so far"),
+                should_stop=cancel.is_set,
+            )
+
+        self._start_background_check(
+            "Restore", f"Comparing the backup on {name} with this computer…", job,
+            lambda plans, stopped: self._on_restore_planned(plans, stopped, backup_dir, roots, name),
+        )
+
+    def _on_restore_planned(self, plans, stopped: bool, backup_dir: str, roots: list[str], name: str) -> None:
+        if isinstance(plans, Exception):
+            QMessageBox.warning(self, "Restore", f"Couldn't read the backup on {name}: {plans}")
+            return
+        if stopped:
+            return
+        if not plans:
+            QMessageBox.information(self, "Restore", f"The backup on {name} is empty.")
+            return
+        has_library = os.path.exists(os.path.join(backup_dir, backup.LIBRARY_COPY))
+        dialog = RestoreDialog(plans, name, backup.free_space(roots[0]), has_library, self)
+        if not dialog.exec():
+            return
+        chosen, files, with_library = dialog.plans(), dialog.files(), dialog.restore_library()
+        db_path = self._library.db_path
+        total_mb = max(1, sum(f.size for f in files) // 1_000_000)
+        self._pause_scan()  # the restore scans for the photos it brings back itself
+        self._moving = True
+
+        def job(worker: ScanWorker, cancel):
+            result = backup.run_backup(
+                files,
+                progress=lambda done, total: worker.progress.emit(
+                    done // 1_000_000, f"{total_mb}\tRestoring… {format_size(done)} of {format_size(total)}"
+                ),
+                should_stop=cancel.is_set,
+                replace=False,  # never overwrite anything on this computer
+            )
+            info_restored = 0
+            if with_library and not result.stopped:
+                worker.progress.emit(0, "0\tBringing back ratings, tags and captions…")
+                library = Library(db_path)
+                try:
+                    library.scan(roots)  # so the photos just restored are in the library
+                    info_restored = library.add_backed_up_info(restore.backed_up_info(backup_dir, chosen))
+                finally:
+                    library.close()
+            return result, info_restored
+
+        self._start_background_check(
+            "Restore", f"Restoring from {name}…", job, lambda outcome, stopped: self._on_restored(outcome, name)
+        )
+
+    def _on_restored(self, outcome, name: str) -> None:
+        self._moving = False
+        if isinstance(outcome, Exception):
+            QMessageBox.warning(self, "Restore", f"The restore didn't finish: {outcome}")
+            self._rescan_if_pending()
+            return
+        result, info_restored = outcome
+        self._refresh_sidebar()
+        self._reload_photos()
+        parts = []
+        if result.copied:
+            parts.append(f"{result.copied:,} file{'s' if result.copied != 1 else ''} ({format_size(result.bytes_copied)})")
+        if info_restored:
+            parts.append(f"ratings, tags or captions for {info_restored:,} photo{'s' if info_restored != 1 else ''}")
+        if result.failed:
+            examples = "\n".join(f"{os.path.basename(path)}: {why}" for path, why in result.failed[:5])
+            QMessageBox.warning(
+                self, "Restore",
+                f"Restored {' and '.join(parts) or 'nothing'} from {name}, but {len(result.failed):,} couldn't be copied:\n\n{examples}",
+            )
+        elif result.stopped:
+            self._after_scan_message = f"Restore stopped — {result.copied:,} files copied back from {name}"
+        else:
+            self._after_scan_message = f"Restored {' and '.join(parts)} from {name}" if parts else f"Nothing needed restoring from {name}"
+        self._rescan_after = False
+        self.rescan()
 
     def _add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Add a Folder to the Collection")

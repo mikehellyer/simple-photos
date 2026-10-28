@@ -26,6 +26,7 @@ from typing import Callable, Iterable, Optional
 
 BACKUP_FOLDER = "Simple-Photos Backup"
 LIBRARY_COPY = "Simple-Photos library.db"
+MANIFEST = "Simple-Photos backup.json"  # which folder in the backup came from where
 TIME_SLACK = 2.0  # seconds
 
 
@@ -55,6 +56,7 @@ class FolderPlan:
 class BackupResult:
     copied: int = 0
     bytes_copied: int = 0
+    skipped: int = 0  # already there, when not replacing
     failed: list[tuple[str, str]] = field(default_factory=list)  # (source, reason)
     stopped: bool = False
     library_saved: bool = False
@@ -154,16 +156,21 @@ def run_backup(
     files: list[FileToCopy],
     progress: Optional[Callable[[int, int], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    replace: bool = True,
 ) -> BackupResult:
-    """Copy each file (a changed one replaces its old backup copy). Each
-    goes to a .part file first and is renamed once complete, keeping the
-    original's dates. progress(bytes done, total bytes)."""
+    """Copy each file — a changed one replacing its old copy, unless
+    replace is False (restoring), when a file that's already there is left
+    exactly as it is. Each goes to a .part file first and is renamed once
+    complete, keeping the original's dates. progress(bytes done, total)."""
     result = BackupResult()
     total = sum(f.size for f in files)
     for item in files:
         if should_stop and should_stop():
             result.stopped = True
             break
+        if not replace and os.path.lexists(item.target):
+            result.skipped += 1
+            continue
         partial = item.target + ".part"
         try:
             os.makedirs(os.path.dirname(item.target), exist_ok=True)
@@ -211,3 +218,26 @@ def save_library(db_path: str | Path, destination: str) -> bool:
             pass
         return False
     return True
+
+
+def write_manifest(roots: Iterable[str], destination: str) -> None:
+    """Note which collection folder each backed-up folder came from, so a
+    restore — maybe on another computer — can match photos to their
+    ratings and tags. Never raises."""
+    import datetime as _dt
+    import json
+
+    roots = [os.path.normpath(os.path.abspath(r)) for r in roots]
+    data = {
+        "app": "Simple-Photos",
+        "saved": _dt.datetime.now().isoformat(timespec="seconds"),
+        "folders": {name: root for root, name in folder_names(roots).items()},
+    }
+    target = os.path.join(backup_root(destination), MANIFEST)
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target + ".part", "w", encoding="utf-8") as out:
+            json.dump(data, out, indent=2)
+        os.replace(target + ".part", target)
+    except OSError:
+        pass
