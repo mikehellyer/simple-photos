@@ -32,7 +32,7 @@ MODES = {
     "same": 4,  # the same photo, resized or re-saved
     "similar": 10,  # also near-identical shots (bursts, a slight crop)
 }
-DEFAULT_MODE = "same"
+DEFAULT_MODE = "exact"
 
 _FLAT_BITS = 6  # a hash with fewer (or more than 64 minus this) bits set is a near-blank photo
 

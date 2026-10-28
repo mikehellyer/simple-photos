@@ -233,9 +233,9 @@ they are, so use Rotate Left / Right for those.
 photos shown (the default) or the whole collection, at one of three
 strictness levels:
 
-- **Exact copies only**: the same file saved twice. Only photos that share a
-  file size are read and compared, so this is quick.
-- **The same photo, even resized or re-saved** (the default): also catches
+- **Exact copies only** (the default): the same file saved twice. Only photos
+  that share a file size are read and compared, so this is quick.
+- **The same photo, even resized or re-saved**: also catches
   smaller copies, re-saved JPEGs, copies sent through messaging apps, and
   rotated copies.
 - **Very similar photos**: also near-identical shots, like a burst or a slight
